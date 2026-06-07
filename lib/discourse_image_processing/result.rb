@@ -10,7 +10,8 @@ module DiscourseImageProcessing
     :height,
     :filesize,
     :backend,
-    :duration_ms
+    :duration_ms,
+    :optimizer
   ) do
     def success? = true
   end

@@ -8,8 +8,9 @@ module DiscourseImageProcessing
     SUPPORTED_INPUTS = %w[jpg jpeg png webp heic heif avif].freeze
     SUPPORTED_OUTPUTS = %w[jpg jpeg png webp avif].freeze
 
-    def initialize(max_pixels: nil)
+    def initialize(max_pixels: nil, backend: :vips)
       @max_pixels = max_pixels
+      @backend = backend.to_sym
     end
 
     def probe(path)
@@ -25,11 +26,12 @@ module DiscourseImageProcessing
         height: info.fetch(:height),
         filesize: File.size(input),
         backend: "libvips-direct",
-        duration_ms: info.fetch(:duration_ms)
+        duration_ms: info.fetch(:duration_ms),
+        optimizer: nil
       )
     end
 
-    def thumbnail(input:, output:, width:, height:, format: nil, quality: 85)
+    def thumbnail(input:, output:, width:, height:, format: nil, quality: 85, optimize: false, optimize_mode: :lossless)
       input = safe_existing_file!(input)
       output = safe_output_path!(output)
       width = Integer(width)
@@ -45,7 +47,30 @@ module DiscourseImageProcessing
       end
 
       output.dirname.mkpath
-      info = Native.thumbnail(input.to_s, output.to_s, width, height, out_format, quality, @max_pixels)
+      info =
+        case @backend
+        when :vips
+          Native.thumbnail(input.to_s, output.to_s, width, height, out_format, quality, @max_pixels)
+        when :imagemagick, :magick
+          probe_info = Native.probe(input.to_s)
+          validate_pixels!(probe_info.fetch(:width), probe_info.fetch(:height))
+          ImageMagickBackend.thumbnail(
+            input: input.to_s,
+            output: output.to_s,
+            width: width,
+            height: height,
+            format: out_format,
+            quality: quality
+          )
+        else
+          raise ArgumentError, "unknown backend: #{@backend.inspect}"
+        end
+
+      opt_info = nil
+      if optimize
+        opt_info = Optimizer.optimize(output, mode: optimize_mode, strip_metadata: true, quality: out_format == "jpg" ? quality : nil)
+      end
+
       Result.new(
         input: input.to_s,
         output: output.to_s,
@@ -54,8 +79,9 @@ module DiscourseImageProcessing
         width: info.fetch(:width),
         height: info.fetch(:height),
         filesize: File.size(output),
-        backend: "libvips-direct",
-        duration_ms: info.fetch(:duration_ms)
+        backend: @backend == :vips ? "libvips-direct" : "imagemagick",
+        duration_ms: info.fetch(:duration_ms),
+        optimizer: opt_info&.fetch(:tools, nil)
       )
     end
 
