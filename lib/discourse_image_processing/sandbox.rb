@@ -15,6 +15,12 @@ module DiscourseImageProcessing
       open_files: 256
     }.freeze
 
+    OPERATIONS = %w[
+      probe thumbnail optimize resize crop downsize convert_to_jpeg fix_orientation
+      convert_favicon_to_png frame_count animated? letter_avatar optimize_image!
+      sanitize_svg!
+    ].freeze
+
     def available?
       require "landlock"
       Landlock::SafeExec.supported?
@@ -40,7 +46,7 @@ module DiscourseImageProcessing
       )
       [result.stdout, result.stderr]
     rescue LoadError
-      Runner.run!(argv, timeout: timeout, env: env)
+      raise Error, "landlock sandbox requested but the landlock gem is unavailable"
     rescue Landlock::SafeExec::CommandError => e
       raise CommandError.new(
         "sandboxed command failed",
@@ -51,8 +57,18 @@ module DiscourseImageProcessing
       )
     end
 
+    def public_call!(operation, args:, kwargs:)
+      operation = operation.to_s
+      raise ArgumentError, "unsupported sandbox operation: #{operation}" unless OPERATIONS.include?(operation)
+      run_worker!(operation, { args: args, kwargs: kwargs })
+    end
+
     def thumbnail(request)
-      run_worker!("thumbnail", request)
+      public_call!(
+        :thumbnail,
+        args: [],
+        kwargs: request.merge(execution: :inline)
+      )
     end
 
     def run_worker!(operation, request)
@@ -61,31 +77,36 @@ module DiscourseImageProcessing
       code = <<~'RUBY'
         require "json"
         require "discourse_image_processing"
+
+        def deep_symbolize(value)
+          case value
+          when Hash
+            value.each_with_object({}) { |(k, v), h| h[k.to_sym] = deep_symbolize(v) }
+          when Array
+            value.map { |v| deep_symbolize(v) }
+          else
+            value
+          end
+        end
+
         payload = JSON.parse(ARGV.fetch(0), symbolize_names: true)
-        req = payload.fetch(:request)
-        case payload.fetch(:operation)
-        when "thumbnail"
-          result = DiscourseImageProcessing.thumbnail(
-            input: req.fetch(:input),
-            output: req.fetch(:output),
-            width: req.fetch(:width),
-            height: req.fetch(:height),
-            format: req[:format],
-            quality: req.fetch(:quality),
-            max_pixels: req[:max_pixels],
-            backend: req.fetch(:backend).to_sym,
-            optimize: req.fetch(:optimize),
-            optimize_mode: req.fetch(:optimize_mode).to_sym,
-            execution: :inline
-          )
-          puts JSON.dump(result.to_h)
+        operation = payload.fetch(:operation).to_s
+        request = payload.fetch(:request)
+        args = request[:args] || []
+        kwargs = deep_symbolize(request[:kwargs] || {})
+
+        result = DiscourseImageProcessing.with_sandbox_disabled do
+          DiscourseImageProcessing.__send__(operation, *args, **kwargs)
+        end
+
+        if defined?(DiscourseImageProcessing::Result) && result.is_a?(DiscourseImageProcessing::Result)
+          puts JSON.dump({ __type: "Result", data: result.to_h })
         else
-          abort "unknown operation"
+          puts JSON.dump({ __type: "Value", data: result })
         end
       RUBY
 
-      input = request.fetch(:input)
-      output = request.fetch(:output)
+      paths = sandbox_paths(request, operation)
       stdout, = Landlock::SafeExec.capture!(
         RbConfig.ruby,
         "-I#{File.expand_path("../../", __dir__)}",
@@ -93,8 +114,8 @@ module DiscourseImageProcessing
         "-e",
         code,
         payload,
-        read: existing_paths([*Landlock::SafeExec.default_read_paths, *runtime_read_paths, input, File.dirname(output), Dir.tmpdir]),
-        write: existing_paths([File.dirname(output), Dir.tmpdir]),
+        read: existing_paths([*Landlock::SafeExec.default_read_paths, *runtime_read_paths, *paths.fetch(:read), Dir.tmpdir]),
+        write: existing_paths([*paths.fetch(:write), Dir.tmpdir]),
         execute: existing_paths([*Landlock::SafeExec.default_execute_paths, File.dirname(RbConfig.ruby)]),
         env: Runner::SAFE_ENV.merge(
           "GEM_HOME" => ENV["GEM_HOME"].to_s,
@@ -108,7 +129,13 @@ module DiscourseImageProcessing
         max_output_bytes: 512 * 1024,
         truncate_output: false
       )
-      symbolize(JSON.parse(stdout))
+      response = JSON.parse(stdout, symbolize_names: true)
+      if response[:__type] == "Result"
+        data = response.fetch(:data)
+        Result.new(**data)
+      else
+        response[:data]
+      end
     rescue LoadError
       nil
     rescue Landlock::SafeExec::CommandError => e
@@ -119,6 +146,46 @@ module DiscourseImageProcessing
         stdout: e.stdout,
         stderr: e.stderr
       )
+    end
+
+    def sandbox_paths(request, operation)
+      read = []
+      write = []
+
+      values = []
+      values.concat(Array(request[:args]))
+      values.concat(Array(request.dig(:kwargs)&.values))
+      values.flatten.compact.each do |value|
+        next unless value.is_a?(String)
+        next if value.empty? || value.include?("\0")
+
+        expanded = File.expand_path(value) rescue next
+        if File.exist?(expanded)
+          read << expanded
+        elsif looks_like_path?(value)
+          write << File.dirname(expanded)
+        end
+      end
+
+      # Common keyword names for generated outputs. Include the containing dir
+      # even when a stale file already exists, because operations may replace it.
+      kwargs = request[:kwargs] || {}
+      %i[output to path].each do |key|
+        next unless kwargs[key].is_a?(String)
+        write << File.dirname(File.expand_path(kwargs[key]))
+      end
+
+      # In-place mutators need write permission for an existing input path too.
+      if %w[optimize optimize_image! sanitize_svg! fix_orientation].include?(operation.to_s)
+        first = Array(request[:args]).first
+        write << File.expand_path(first) if first.is_a?(String) && File.exist?(first)
+      end
+
+      { read: read.uniq, write: write.uniq }
+    end
+
+    def looks_like_path?(value)
+      value.start_with?("/", "./", "../") || File.extname(value) != ""
     end
 
     def runtime_read_paths

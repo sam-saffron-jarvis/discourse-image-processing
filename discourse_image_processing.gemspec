@@ -16,7 +16,6 @@ Gem::Specification.new do |spec|
   spec.extensions = ["ext/discourse_image_processing_native/extconf.rb"]
 
   spec.add_runtime_dependency "rexml", "~> 3.4"
-  spec.add_runtime_dependency "landlock", "~> 0.2"
 
   spec.metadata = {
     "source_code_uri" => spec.homepage,

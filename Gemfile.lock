@@ -2,13 +2,11 @@ PATH
   remote: .
   specs:
     discourse_image_processing (0.1.0)
-      landlock (~> 0.2)
       rexml (~> 3.4)
 
 GEM
   remote: https://rubygems.org/
   specs:
-    landlock (0.2)
     rake (13.4.2)
     rake-compiler (1.3.1)
       rake
@@ -26,7 +24,6 @@ DEPENDENCIES
 CHECKSUMS
   bundler (4.0.13) sha256=19f08be7f27022cf0b89f27da0b044ae075e8270a9ef44ad248a932614e1ca3b
   discourse_image_processing (0.1.0)
-  landlock (0.2) sha256=9bb86d7d12b16485b278ba575d49f55b730089c7a3d0f45a769fe4d7384d5e55
   rake (13.4.2) sha256=cb825b2bd5f1f8e91ca37bddb4b9aaf345551b4731da62949be002fa89283701
   rake-compiler (1.3.1) sha256=6b351612b6e2d73ddd5563ee799bb58685176e05363db6758504bd11573d670a
   rexml (3.4.4) sha256=19e0a2c3425dfbf2d4fc1189747bdb2f849b6c5e74180401b15734bc97b5d142

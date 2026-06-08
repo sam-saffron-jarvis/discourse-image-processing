@@ -37,7 +37,7 @@ module DiscourseImageProcessing
       argv[0] = resolve_executable!(argv[0])
       child_env = SAFE_ENV.merge(env.reject { |key, _| PROTECTED_ENV_KEYS.include?(key.to_s) })
 
-      if sandbox
+      if sandbox || DiscourseImageProcessing.sandbox_enabled?
         return Sandbox.capture_command!(argv, read: read, write: write, timeout: timeout, env: child_env)
       end
 

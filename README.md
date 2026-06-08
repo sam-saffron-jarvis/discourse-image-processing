@@ -42,7 +42,7 @@ Implemented:
 
 Not implemented yet:
 
-- Landlock sandboxing for every compatibility helper; thumbnail supports worker sandbox now, shell-based compatibility helpers still use bounded argv execution unless routed through a sandboxed worker path
+- Nothing currently known that blocks Discourse integration; Landlock is optional, but when explicitly enabled it applies atomically to all public operations.
 
 ## Why this exists
 
@@ -78,7 +78,11 @@ Optional command dependencies for compatibility/optimisation paths:
 Ruby runtime dependencies:
 
 - `rexml` for SVG sanitising
-- `landlock` for Linux subprocess sandboxing
+
+Optional Ruby dependency:
+
+- `landlock` for Linux subprocess sandboxing. It is not a gem dependency;
+  install it in the host application if you want sandboxing.
 
 ```bash
 gem build discourse_image_processing.gemspec
@@ -119,23 +123,11 @@ DiscourseImageProcessing.optimize_image!("out.jpg")
 DiscourseImageProcessing.optimize_image!("out.png", allow_lossy_png: true)
 DiscourseImageProcessing.sanitize_svg!("icon.svg")
 
-# Run a thumbnail operation in a subprocess with Landlock/SafeExec when available.
-DiscourseImageProcessing.thumbnail(
-  input: "input.jpg",
-  output: "thumb.jpg",
-  width: 600,
-  height: 400,
-  execution: :sandbox
-)
-
-# Use :sandbox_if_available only when an explicit best-effort fallback is desired.
-DiscourseImageProcessing.thumbnail(
-  input: "input.jpg",
-  output: "thumb.jpg",
-  width: 600,
-  height: 400,
-  execution: :sandbox_if_available
-)
+# Enable Landlock globally. This is atomic: after this point every public
+# operation is executed through the sandbox worker. If Landlock is unavailable,
+# this raises instead of silently degrading.
+DiscourseImageProcessing.enable_sandbox!
+DiscourseImageProcessing.sandbox_enabled?
 DiscourseImageProcessing.sandbox_available?
 ```
 
