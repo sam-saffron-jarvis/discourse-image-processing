@@ -24,13 +24,8 @@ module SafeImage
     module_function
 
     def sanitize!(path)
-      path = Pathname.new(PathSafety.local_path(path)).expand_path
-      raise UnsafePathError, "not a file: #{path}" unless path.file?
-
-      xml = File.read(path.to_s)
-      raise InvalidImageError, "doctype is not allowed in SVG" if xml.match?(/<!DOCTYPE/i)
-      doc = REXML::Document.new(xml)
-      raise InvalidImageError, "SVG root required" unless doc.root&.name == "svg"
+      path = Pathname.new(SvgMetadata.safe_svg_path(path))
+      doc = SvgMetadata.parse(path.to_s)
 
       clean = REXML::Document.new
       clean.add_element(sanitize_element!(doc.root.deep_clone))

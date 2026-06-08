@@ -75,6 +75,10 @@ thread = Thread.new do
       body = File.binread(GIF)
       socket.write "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n"
       socket.write body
+    when "/icon.svg"
+      body = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="34"></svg>'
+      socket.write "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n"
+      socket.write body
     when "/redirect"
       socket.write "HTTP/1.1 302 Found\r\nLocation: /huge.jpg\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     else
@@ -110,6 +114,8 @@ begin
 
   raise "remote type mismatch" unless SafeImage.remote_type("#{url}/huge.jpg", allow_private: true, max_bytes: 1_000_000, max_pixels: 100_000_000) == :jpeg
   raise "remote redirect mismatch" unless SafeImage.remote_dimensions("#{url}/redirect", allow_private: true, max_bytes: 1_000_000, max_pixels: 100_000_000) == [8900, 8900]
+  raise "remote svg type mismatch" unless SafeImage.remote_type("#{url}/icon.svg", allow_private: true, max_bytes: 1_000_000) == :svg
+  raise "remote svg size mismatch" unless SafeImage.remote_size("#{url}/icon.svg", allow_private: true, max_bytes: 1_000_000) == [12, 34]
   raise "remote animated mismatch" unless SafeImage.remote_animated?("#{url}/animated", allow_private: true, max_bytes: 1_000_000, max_pixels: 10_000_000)
 
   begin

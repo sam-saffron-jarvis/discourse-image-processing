@@ -16,6 +16,7 @@ require_relative "safe_image/runner"
 require_relative "safe_image/sandbox"
 require_relative "safe_image/path_safety"
 require_relative "safe_image/optimizer"
+require_relative "safe_image/svg_metadata"
 require_relative "safe_image/svg_sanitizer"
 require_relative "safe_image/remote"
 require_relative "safe_image/image_magick_backend"
@@ -63,23 +64,40 @@ module SafeImage
 
   def probe(path, max_pixels: nil)
     maybe_sandbox(:probe, args: [path], kwargs: { max_pixels: max_pixels }) do
-      begin
-        Processor.new(max_pixels: max_pixels).probe(path)
-      rescue UnsupportedFormatError
-        path = PathSafety.local_path(path)
-        info = ImageMagickBackend.probe(path, max_pixels: max_pixels)
+      path = PathSafety.local_path(path)
+
+      if File.extname(path).downcase == ".svg"
+        info = SvgMetadata.probe(path, max_pixels: max_pixels)
         Result.new(
           input: File.expand_path(path),
           output: nil,
-          input_format: info.fetch(:input_format),
+          input_format: "svg",
           output_format: nil,
           width: info.fetch(:width),
           height: info.fetch(:height),
           filesize: File.size(path),
-          backend: "imagemagick",
+          backend: "svg-metadata",
           duration_ms: info.fetch(:duration_ms),
           optimizer: nil
         )
+      else
+        begin
+          Processor.new(max_pixels: max_pixels).probe(path)
+        rescue UnsupportedFormatError
+          info = ImageMagickBackend.probe(path, max_pixels: max_pixels)
+          Result.new(
+            input: File.expand_path(path),
+            output: nil,
+            input_format: info.fetch(:input_format),
+            output_format: nil,
+            width: info.fetch(:width),
+            height: info.fetch(:height),
+            filesize: File.size(path),
+            backend: "imagemagick",
+            duration_ms: info.fetch(:duration_ms),
+            optimizer: nil
+          )
+        end
       end
     end
   end
@@ -119,8 +137,12 @@ module SafeImage
 
   def orientation(path, max_pixels: nil)
     maybe_sandbox(:orientation, args: [path], kwargs: { max_pixels: max_pixels }) do
-      probe(path, max_pixels: max_pixels) if max_pixels
-      ImageMagickBackend.orientation(path)
+      if File.extname(PathSafety.local_path(path)).downcase == ".svg"
+        1
+      else
+        probe(path, max_pixels: max_pixels) if max_pixels
+        ImageMagickBackend.orientation(path)
+      end
     end
   end
 
@@ -217,6 +239,9 @@ module SafeImage
   end
 
   def animated?(*args, **kwargs)
+    path = args.first
+    return false if path && File.extname(PathSafety.local_path(path)).downcase == ".svg"
+
     maybe_sandbox(:animated?, args: args, kwargs: kwargs) { DiscourseCompat.animated?(*args, **kwargs) }
   end
 

@@ -168,6 +168,7 @@ Returns a FastImage-style symbol for a local file:
 ```ruby
 SafeImage.type("upload.jpg") # => :jpeg
 SafeImage.type("upload.png") # => :png
+SafeImage.type("icon.svg")   # => :svg
 ```
 
 JPEG is returned as `:jpeg`, not `:jpg`, to match common Ruby image-probing
@@ -180,7 +181,13 @@ Returns `[width, height]` for a local file:
 ```ruby
 SafeImage.size("upload.jpg")       # => [1600, 1200]
 SafeImage.dimensions("upload.png") # => [800, 600]
+SafeImage.size("icon.svg")         # => [120, 80]
 ```
+
+SVG metadata is handled by a dedicated parser, not ImageMagick or libvips. It is
+limited to local `.svg` files, caps input size/tree depth/element/attribute
+counts, rejects `DOCTYPE` and non-XML processing instructions, requires an `<svg>`
+root, and derives dimensions from numeric `width`/`height` or `viewBox`.
 
 ### `SafeImage.orientation(path, max_pixels: nil)`
 
@@ -236,6 +243,8 @@ Remote fetching is deliberately conservative:
   carrier-grade NAT, IPv4-mapped IPv6, NAT64, 6to4/Teredo, and other
   special-use resolved addresses are rejected by default
 - no image decoding happens directly from the socket
+- SVG remote metadata uses the same bounded SVG metadata parser after download;
+  SVG is not handed to ImageMagick for probing
 
 Set `allow_private: true` only when the caller has already made an SSRF decision
 or is intentionally probing a trusted internal URL. Passing `allow_private: true`
