@@ -21,6 +21,8 @@ Safe Image is not magic pixie dust. It is a deliberately small choke point.
 What it does:
 
 - uses explicit argv arrays for external commands, never shell strings
+- starts external commands with an allowlisted environment, private temp/home/cache
+  directories, bounded stdout/stderr, and process-group timeout cleanup
 - uses explicit libvips loaders selected from allowlisted extensions
 - enables libvips' untrusted-operation block in-process
 - blocks libvips ImageMagick loader classes in the native extension
@@ -220,11 +222,16 @@ Remote fetching is deliberately conservative:
 - open/read timeouts and an overall `total_timeout` are capped
 - response size is capped by `max_bytes`
 - public remote fetches are limited to ports 80 and 443 by default
+- `Net::HTTP` environment proxies are disabled; proxy environment variables cannot
+  route around IP validation
 - DNS answers are checked against a special-use address blocklist and the
   connection is pinned to a vetted IP address to avoid DNS-rebinding/TOCTOU
   bypasses
-- sensitive caller headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are
-  stripped on cross-origin redirects
+- HTTPS-to-HTTP redirects are rejected
+- same-origin redirects keep caller headers; cross-origin redirects use a small
+  header allowlist (`Accept`, `Accept-Encoding`, `User-Agent`) rather than a
+  blacklist
+- hop-by-hop/proxy/`Host` request headers are rejected before any request
 - private, loopback, link-local, multicast, documentation, benchmarking,
   carrier-grade NAT, IPv4-mapped IPv6, NAT64, 6to4/Teredo, and other
   special-use resolved addresses are rejected by default

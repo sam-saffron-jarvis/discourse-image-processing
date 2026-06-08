@@ -87,3 +87,28 @@ ensure
 end
 
 puts "OK strict sandbox does not silently degrade"
+
+Dir.mktmpdir do |dir|
+  not_svg = File.join(dir, "not.svg")
+  File.write(not_svg, "<html><body>nope</body></html>")
+  begin
+    SafeImage.sanitize_svg!(not_svg)
+    abort "SVG sanitizer accepted non-SVG root"
+  rescue SafeImage::InvalidImageError
+  end
+
+  svg = File.join(dir, "bad.svg")
+  File.write(svg, <<~SVG)
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+      <rect width="10" height="10" fill="url(http://evil.example/x)" onclick="alert(1)"/>
+      <circle r="2" fill="url(#safe)"/>
+    </svg>
+  SVG
+  SafeImage.sanitize_svg!(svg)
+  cleaned = File.read(svg)
+  abort "SVG sanitizer kept external url" if cleaned.include?("evil.example")
+  abort "SVG sanitizer kept event handler" if cleaned.include?("onclick")
+  abort "SVG sanitizer stripped fragment url" unless cleaned.include?("url(#safe)")
+end
+
+puts "OK SVG sanitizer rejects non-SVG roots and external URLs"

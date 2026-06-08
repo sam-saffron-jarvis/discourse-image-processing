@@ -32,13 +32,18 @@ same_origin_headers = SafeImage::Remote.redirect_headers(
 raise "same-origin redirect stripped headers" unless same_origin_headers.key?("Authorization") && same_origin_headers.key?("Cookie")
 
 cross_origin_headers = SafeImage::Remote.redirect_headers(
-  { "Authorization" => "secret", "Cookie" => "yum", "X-Test" => "ok" },
+  { "Authorization" => "secret", "Cookie" => "yum", "X-Test" => "nope", "Accept" => "image/*" },
   from: URI("https://example.com/a"),
   to: URI("https://evil.example/b")
 )
 raise "cross-origin redirect leaked Authorization" if cross_origin_headers.key?("Authorization")
 raise "cross-origin redirect leaked Cookie" if cross_origin_headers.key?("Cookie")
-raise "cross-origin redirect stripped normal header" unless cross_origin_headers["X-Test"] == "ok"
+raise "cross-origin redirect leaked custom header" if cross_origin_headers.key?("X-Test")
+raise "cross-origin redirect stripped safe header" unless cross_origin_headers["Accept"] == "image/*"
+
+filtered_headers = SafeImage::Remote.filtered_headers("Host" => "evil", "Connection" => "keep-alive", "X-Test" => "ok")
+raise "filtered headers kept Host" if filtered_headers.key?("Host")
+raise "filtered headers stripped normal header" unless filtered_headers["X-Test"] == "ok"
 
 begin
   SafeImage::Remote.validate_uri!(URI("https://example.com:81/x"), allow_private: false)
@@ -92,7 +97,17 @@ begin
   rescue SafeImage::UnsafePathError
   end
 
-  raise "remote size mismatch" unless SafeImage.remote_size("#{url}/huge.jpg", allow_private: true, max_bytes: 1_000_000, max_pixels: 100_000_000) == [8900, 8900]
+  old_http_proxy = ENV["HTTP_PROXY"]
+  old_https_proxy = ENV["HTTPS_PROXY"]
+  ENV["HTTP_PROXY"] = "http://127.0.0.1:1"
+  ENV["HTTPS_PROXY"] = "http://127.0.0.1:1"
+  begin
+    raise "remote size mismatch" unless SafeImage.remote_size("#{url}/huge.jpg", allow_private: true, max_bytes: 1_000_000, max_pixels: 100_000_000) == [8900, 8900]
+  ensure
+    ENV["HTTP_PROXY"] = old_http_proxy
+    ENV["HTTPS_PROXY"] = old_https_proxy
+  end
+
   raise "remote type mismatch" unless SafeImage.remote_type("#{url}/huge.jpg", allow_private: true, max_bytes: 1_000_000, max_pixels: 100_000_000) == :jpeg
   raise "remote redirect mismatch" unless SafeImage.remote_dimensions("#{url}/redirect", allow_private: true, max_bytes: 1_000_000, max_pixels: 100_000_000) == [8900, 8900]
   raise "remote animated mismatch" unless SafeImage.remote_animated?("#{url}/animated", allow_private: true, max_bytes: 1_000_000, max_pixels: 10_000_000)

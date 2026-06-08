@@ -21,7 +21,11 @@ module SafeImage
     DEFAULT_ALLOWED_PORTS = [80, 443].freeze
     USER_AGENT = "safe_image/#{VERSION}".freeze
 
-    SENSITIVE_REDIRECT_HEADERS = %w[authorization cookie proxy-authorization].freeze
+    SAFE_CROSS_ORIGIN_REDIRECT_HEADERS = %w[accept accept-encoding user-agent].freeze
+    FORBIDDEN_REQUEST_HEADERS = %w[
+      host connection keep-alive proxy-authenticate proxy-authorization
+      proxy-connection te trailer transfer-encoding upgrade
+    ].freeze
 
     CONTENT_TYPE_EXTENSIONS = {
       "image/jpeg" => ".jpg",
@@ -149,7 +153,7 @@ module SafeImage
       check_deadline!(started_at, total_timeout)
       ipaddr = validate_uri!(uri, allow_private: allow_private, allowed_ports: allowed_ports)
 
-      http = Net::HTTP.new(uri.host, uri.port)
+      http = Net::HTTP.new(uri.host, uri.port, nil)
       http.ipaddr = ipaddr if ipaddr
       http.use_ssl = uri.scheme == "https"
       http.open_timeout = open_timeout
@@ -158,7 +162,8 @@ module SafeImage
       request = Net::HTTP::Get.new(uri)
       request["User-Agent"] = USER_AGENT
       request["Accept"] = "image/*,*/*;q=0.1"
-      headers.each { |key, value| request[key.to_s] = value.to_s }
+      request["Accept-Encoding"] = "identity"
+      filtered_headers(headers).each { |key, value| request[key.to_s] = value.to_s }
 
       bytes = 0
       content_type = nil
@@ -170,6 +175,9 @@ module SafeImage
         when Net::HTTPRedirection
           location = response["location"] or raise Error, "redirect without Location"
           redirected = parse_uri(uri.merge(location).to_s)
+          if uri.scheme == "https" && redirected.scheme == "http"
+            raise UnsafePathError, "refusing HTTPS to HTTP redirect"
+          end
           return request(
             redirected,
             io: io,
@@ -217,7 +225,9 @@ module SafeImage
       end
       return nil if allow_private
 
-      addresses = Resolv.getaddresses(uri.host)
+      resolver = Resolv::DNS.new
+      resolver.timeouts = [2, 2]
+      addresses = resolver.getaddresses(uri.host).map(&:to_s)
       raise UnsafePathError, "remote image host did not resolve" if addresses.empty?
 
       addresses.each do |address|
@@ -238,14 +248,21 @@ module SafeImage
       BLOCKED_IP_RANGES.any? { |range| range.include?(ip) }
     end
 
+    def filtered_headers(headers)
+      headers.reject { |key, _| FORBIDDEN_REQUEST_HEADERS.include?(key.to_s.downcase) }
+    end
+
     def redirect_headers(headers, from:, to:)
+      headers = filtered_headers(headers)
       return headers if same_origin?(from, to)
 
-      headers.reject { |key, _| SENSITIVE_REDIRECT_HEADERS.include?(key.to_s.downcase) }
+      headers.select { |key, _| SAFE_CROSS_ORIGIN_REDIRECT_HEADERS.include?(key.to_s.downcase) }
     end
 
     def same_origin?(a, b)
-      a.scheme == b.scheme && a.host == b.host && a.port == b.port
+      a.scheme.to_s.downcase == b.scheme.to_s.downcase &&
+        a.host.to_s.downcase == b.host.to_s.downcase &&
+        a.port == b.port
     end
 
     def check_deadline!(started_at, total_timeout)

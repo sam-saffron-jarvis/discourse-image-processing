@@ -28,8 +28,9 @@ module SafeImage
       false
     end
 
-    def capture_command!(argv, read:, write:, timeout: Runner::DEFAULT_TIMEOUT, env: Runner::SAFE_ENV, rlimits: DEFAULT_RLIMITS)
+    def capture_command!(argv, read:, write:, timeout: Runner::DEFAULT_TIMEOUT, env: nil, rlimits: DEFAULT_RLIMITS)
       require "landlock"
+      env ||= Runner.command_env(Dir.tmpdir)
 
       result = Landlock::SafeExec.capture!(
         *argv.map(&:to_s),
@@ -119,41 +120,45 @@ module SafeImage
       RUBY
 
       paths = sandbox_paths(request, operation)
-      stdout, = Landlock::SafeExec.capture!(
-        RbConfig.ruby,
-        "-I#{File.expand_path("../../", __dir__)}",
-        "-rjson",
-        "-e",
-        code,
-        payload,
-        read: existing_paths([*Landlock::SafeExec.default_read_paths, *runtime_read_paths, *paths.fetch(:read), Dir.tmpdir]),
-        write: existing_paths([*paths.fetch(:write), Dir.tmpdir]),
-        execute: existing_paths([*Landlock::SafeExec.default_execute_paths, File.dirname(RbConfig.ruby)]),
-        env: Runner::SAFE_ENV.merge(
+      Dir.mktmpdir("safe-image-worker-") do |tmpdir|
+        worker_env = Runner.command_env(tmpdir).merge(
           "SAFE_IMAGE_SANDBOX_CHILD" => "1",
           "GEM_HOME" => ENV["GEM_HOME"].to_s,
           "GEM_PATH" => ENV["GEM_PATH"].to_s,
           "RUBYLIB" => $LOAD_PATH.select { |p| p && File.directory?(p) }.join(File::PATH_SEPARATOR)
-        ),
-        inherit_env: false,
-        timeout: Runner::DEFAULT_TIMEOUT,
-        rlimits: DEFAULT_RLIMITS,
-        seccomp_deny_network: true,
-        max_output_bytes: 512 * 1024,
-        truncate_output: false
-      )
-      response = JSON.parse(stdout, symbolize_names: true)
-      if response[:__type] == "Result"
-        data = response.fetch(:data)
-        Result.new(**data)
-      elsif response[:__type] == "Info"
-        data = response.fetch(:data)
-        Info.new(**data)
-      else
-        response[:data]
+        )
+
+        stdout, = Landlock::SafeExec.capture!(
+          RbConfig.ruby,
+          "-I#{File.expand_path("../../", __dir__)}",
+          "-rjson",
+          "-e",
+          code,
+          payload,
+          read: existing_paths([*Landlock::SafeExec.default_read_paths, *runtime_read_paths, *paths.fetch(:read), tmpdir]),
+          write: existing_paths([*paths.fetch(:write), tmpdir]),
+          execute: existing_paths([*Landlock::SafeExec.default_execute_paths, File.dirname(RbConfig.ruby)]),
+          env: worker_env,
+          inherit_env: false,
+          timeout: Runner::DEFAULT_TIMEOUT,
+          rlimits: DEFAULT_RLIMITS,
+          seccomp_deny_network: true,
+          max_output_bytes: 512 * 1024,
+          truncate_output: false
+        )
+        response = JSON.parse(stdout, symbolize_names: true)
+        if response[:__type] == "Result"
+          data = response.fetch(:data)
+          Result.new(**data)
+        elsif response[:__type] == "Info"
+          data = response.fetch(:data)
+          Info.new(**data)
+        else
+          response[:data]
+        end
       end
     rescue LoadError
-      nil
+      raise Error, "landlock sandbox requested but the landlock gem is unavailable"
     rescue Landlock::SafeExec::CommandError => e
       raise CommandError.new(
         "sandboxed worker failed",
@@ -194,7 +199,11 @@ module SafeImage
       # In-place mutators need write permission for an existing input path too.
       if %w[optimize optimize_image! sanitize_svg! fix_orientation].include?(operation.to_s)
         first = Array(request[:args]).first
-        write << File.expand_path(first) if first.is_a?(String) && File.exist?(first)
+        if first.is_a?(String) && File.exist?(first)
+          expanded = File.expand_path(first)
+          write << expanded
+          write << File.dirname(expanded)
+        end
       end
 
       { read: read.uniq, write: write.uniq }

@@ -2,6 +2,8 @@
 
 require "rexml/document"
 require "rexml/formatters/default"
+require "pathname"
+require "tempfile"
 
 module SafeImage
   module SvgSanitizer
@@ -22,26 +24,27 @@ module SafeImage
     module_function
 
     def sanitize!(path)
-      path = Pathname.new(path).expand_path
+      path = Pathname.new(PathSafety.local_path(path)).expand_path
       raise UnsafePathError, "not a file: #{path}" unless path.file?
 
       xml = File.read(path.to_s)
       raise InvalidImageError, "doctype is not allowed in SVG" if xml.match?(/<!DOCTYPE/i)
       doc = REXML::Document.new(xml)
-      sanitize_element!(doc.root)
+      raise InvalidImageError, "SVG root required" unless doc.root&.name == "svg"
+
+      clean = REXML::Document.new
+      clean.add_element(sanitize_element!(doc.root.deep_clone))
 
       out = +""
       formatter = REXML::Formatters::Default.new
-      formatter.write(doc, out)
-      File.write(path.to_s, out)
+      formatter.write(clean, out)
+      atomic_write(path, out)
       { format: "svg", sanitized: true, filesize: File.size(path.to_s) }
     rescue REXML::ParseException => e
       raise InvalidImageError, "invalid SVG: #{e.message}"
     end
 
     def sanitize_element!(element)
-      return unless element
-
       element.elements.to_a.each do |child|
         if ALLOWED_ELEMENTS.include?(child.name)
           sanitize_element!(child)
@@ -55,9 +58,7 @@ module SafeImage
         name = attr.name.to_s
         value = attr.value.to_s
         allowed = ALLOWED_ATTRIBUTES.include?(name) || name.start_with?("aria-")
-        normalized_value = value.gsub(/[\u0000-\u001f\u007f\s]+/, "")
-        dangerous_value = normalized_value.match?(/(?:javascript|data):/i) || (normalized_value.include?("url(") && normalized_value.match?(/https?:/i))
-        if !allowed || name.downcase.start_with?("on") || dangerous_value
+        if !allowed || name.downcase.start_with?("on") || dangerous_value?(value)
           attributes_to_delete << name
         end
       end
@@ -66,6 +67,26 @@ module SafeImage
       %w[href xlink:href].each do |href|
         next unless element.attributes[href]
         element.delete_attribute(href) unless element.attributes[href].to_s.start_with?("#")
+      end
+      element
+    end
+
+    def dangerous_value?(value)
+      normalized = value.to_s.gsub(/[\u0000-\u001f\u007f\s]+/, "")
+      return true if normalized.match?(/(?:javascript|data):/i)
+
+      normalized.scan(/url\(([^)]*)\)/i).any? do |match|
+        inner = match.first.to_s.delete(%q{'"})
+        !inner.match?(/\A#[A-Za-z][\w.-]*\z/)
+      end
+    end
+
+    def atomic_write(path, content)
+      Tempfile.create([path.basename.to_s, ".tmp"], path.dirname.to_s, binmode: false) do |tmp|
+        tmp.write(content)
+        tmp.flush
+        tmp.fsync
+        File.rename(tmp.path, path.to_s)
       end
     end
   end
