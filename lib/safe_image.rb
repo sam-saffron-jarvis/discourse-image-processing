@@ -17,6 +17,7 @@ require_relative "safe_image/sandbox"
 require_relative "safe_image/path_safety"
 require_relative "safe_image/optimizer"
 require_relative "safe_image/svg_sanitizer"
+require_relative "safe_image/remote"
 require_relative "safe_image/image_magick_backend"
 require_relative "safe_image/vips_backend"
 require_relative "safe_image/processor"
@@ -62,7 +63,24 @@ module SafeImage
 
   def probe(path, max_pixels: nil)
     maybe_sandbox(:probe, args: [path], kwargs: { max_pixels: max_pixels }) do
-      Processor.new(max_pixels: max_pixels).probe(path)
+      begin
+        Processor.new(max_pixels: max_pixels).probe(path)
+      rescue UnsupportedFormatError
+        path = PathSafety.local_path(path)
+        info = ImageMagickBackend.probe(path, max_pixels: max_pixels)
+        Result.new(
+          input: File.expand_path(path),
+          output: nil,
+          input_format: info.fetch(:input_format),
+          output_format: nil,
+          width: info.fetch(:width),
+          height: info.fetch(:height),
+          filesize: File.size(path),
+          backend: "imagemagick",
+          duration_ms: info.fetch(:duration_ms),
+          optimizer: nil
+        )
+      end
     end
   end
 
@@ -108,6 +126,30 @@ module SafeImage
 
   def fastimage_type(format)
     format.to_s == "jpg" ? :jpeg : format.to_s.to_sym
+  end
+
+  def remote_info(url, **kwargs)
+    Remote.info(url, **kwargs)
+  end
+
+  def remote_size(url, **kwargs)
+    Remote.size(url, **kwargs)
+  end
+
+  def remote_dimensions(url, **kwargs)
+    remote_size(url, **kwargs)
+  end
+
+  def remote_type(url, **kwargs)
+    Remote.type(url, **kwargs)
+  end
+
+  def remote_animated?(url, **kwargs)
+    Remote.animated?(url, **kwargs)
+  end
+
+  def fetch_remote(url, **kwargs, &block)
+    Remote.fetch(url, **kwargs, &block)
   end
 
   def thumbnail(input:, output:, width:, height:, format: nil, quality: 85, max_pixels: nil, backend: :vips, optimize: false, optimize_mode: :lossless, execution: :inline)

@@ -206,6 +206,78 @@ info.orientation # => 1
 `animated:` and `orientation:` default to `false` because they may require extra
 ImageMagick work. When disabled, those fields are `nil`.
 
+## Remote metadata helpers
+
+These helpers are intended to cover `FastImage.size(url)` / `FastImage.type(url)`
+style use cases without another Ruby dependency. They use only Ruby stdlib
+`Net::HTTP`, download to a tempfile with a byte cap, then run the normal Safe
+Image local metadata path on that tempfile.
+
+Remote fetching is deliberately conservative:
+
+- only `http` and `https` URLs are accepted
+- redirects are capped
+- open/read timeouts are capped
+- response size is capped by `max_bytes`
+- private, loopback, and link-local resolved addresses are rejected by default
+- no image decoding happens directly from the socket
+
+Set `allow_private: true` only when the caller has already made an SSRF decision
+or is intentionally probing a trusted internal URL.
+
+### `SafeImage.remote_size(url, ...)` / `SafeImage.remote_dimensions(url, ...)`
+
+```ruby
+SafeImage.remote_size(
+  "https://example.com/image.jpg",
+  max_bytes: 10.megabytes,
+  max_pixels: 40_000_000
+)
+# => [1600, 1200]
+```
+
+### `SafeImage.remote_type(url, ...)`
+
+```ruby
+SafeImage.remote_type("https://example.com/image.png", max_bytes: 10.megabytes)
+# => :png
+```
+
+### `SafeImage.remote_info(url, ...)`
+
+```ruby
+info = SafeImage.remote_info(
+  "https://example.com/image.gif",
+  max_bytes: 10.megabytes,
+  animated: true
+)
+info.type     # => :gif
+info.size     # => [640, 480]
+info.animated # => true
+```
+
+### `SafeImage.remote_animated?(url, ...)`
+
+```ruby
+SafeImage.remote_animated?("https://example.com/image.webp", max_bytes: 10.megabytes)
+# => true / false
+```
+
+### `SafeImage.fetch_remote(url, ...) { |path| ... }`
+
+Downloads a remote image to a tempfile and yields the local path:
+
+```ruby
+SafeImage.fetch_remote("https://example.com/image.jpg", max_bytes: 10.megabytes) do |path|
+  SafeImage.probe(path)
+end
+```
+
+When global Landlock is enabled, the network fetch itself is not put inside the
+Landlock worker because the worker denies network access. The downloaded tempfile
+is then passed through the normal Safe Image local image APIs, so decoding still
+uses the same sandboxed image-processing path.
+
 ## Compatibility API
 
 These methods are shaped around the image operations Discourse currently

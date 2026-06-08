@@ -6,8 +6,16 @@ module SafeImage
 
     module_function
 
+    def local_path(value)
+      if value.respond_to?(:path) && value.path
+        value.path.to_s
+      else
+        value.to_s
+      end
+    end
+
     def ensure_imagemagick_safe!(path)
-      path = path.to_s
+      path = local_path(path)
       raise UnsafePathError, "path contains NUL" if path.include?("\0")
       raise UnsafePathError, "path must be absolute" unless path.start_with?("/")
       unless SAFE_IMAGEMAGICK_PATH.match?(path)
