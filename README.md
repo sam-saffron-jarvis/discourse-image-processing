@@ -80,6 +80,24 @@ gem install ./safe_image-0.1.0.gem
 
 ```ruby
 require "safe_image"
+
+result = SafeImage.thumbnail(
+  input: "upload.jpg",
+  output: "thumb.jpg",
+  width: 600,
+  height: 400,
+  max_pixels: 40_000_000
+)
+
+puts "#{result.backend}: #{result.width}x#{result.height} #{result.filesize} bytes"
+
+SafeImage.convert(
+  "upload.png",
+  "upload.jpg",
+  format: "jpg",
+  quality: 85,
+  max_pixels: 40_000_000
+)
 ```
 
 ## Return values
@@ -95,7 +113,8 @@ SafeImage::Result[
   width:,
   height:,
   filesize:,
-  backend:,        # "libvips-direct" or "imagemagick"
+  backend:,        # e.g. "libvips-direct", "imagemagick", "cjpegli",
+                   #      "libvips-direct+cjpegli", or "sandboxed-..."
   duration_ms:,
   optimizer:       # optimizer tool list for thumbnail path, otherwise nil
 ]
@@ -151,7 +170,8 @@ result = SafeImage.thumbnail(
   optimize: true,
   optimize_mode: :lossless, # :lossless or :lossy for PNG optimisation
   execution: :inline,       # :inline, :sandbox, :sandbox_if_available
-  encoder: :auto            # :auto, :cjpegli, :vips, :imagemagick for JPEG output
+  encoder: :auto,           # :auto, :cjpegli, :vips, :imagemagick for JPEG output
+  chroma_subsampling: :auto # :auto, "420", "422", "444"
 )
 ```
 
@@ -165,12 +185,29 @@ Supported outputs for the direct libvips backend:
 `execution: :sandbox` is fail-closed: it raises if Landlock is unavailable.
 `execution: :sandbox_if_available` uses the sandbox only when available.
 
-For JPEG output with the direct libvips backend, `encoder: :auto` uses `cjpegli`
-when it is installed, by rendering the transformed image to a temporary PNG and
-then encoding the final JPEG through Jpegli. If `cjpegli` is missing, `:auto`
-falls back to the normal libvips JPEG writer. Use `encoder: :cjpegli` to require
-Jpegli and fail closed, or `encoder: :vips` / `:imagemagick` to force the legacy
-encoder path.
+## JPEG encoder selection
+
+Safe Image separates **encoding generated JPEGs** from **optimising existing
+JPEGs**. This avoids hiding a lossy re-encode behind a method named `optimize`.
+
+| Operation | `encoder: :auto` behavior |
+| --- | --- |
+| `thumbnail` / `resize` / `crop` / `downsize` to JPEG with `backend: :vips` | use `cjpegli` when installed; otherwise use normal libvips JPEG output |
+| `convert("input.png", "output.jpg", format: "jpg")` | use `cjpegli` when installed; otherwise use ImageMagick compatibility path |
+| `convert` from HEIC/WebP/AVIF/GIF/JPEG to JPEG | fall back to ImageMagick compatibility path; `cjpegli` is not treated as a universal decoder |
+| `optimize("existing.jpg")` | use `jpegoptim`; never use `cjpegli` by default |
+
+Encoder controls:
+
+| Option | Meaning |
+| --- | --- |
+| `encoder: :auto` | best available default with safe fallback |
+| `encoder: :cjpegli` | require Jpegli and fail closed if unavailable/unsupported |
+| `encoder: :vips` | force normal libvips JPEG output where available |
+| `encoder: :imagemagick` | force ImageMagick compatibility output |
+
+`cjpegli` output is ordinary browser-compatible JPEG. It is optional because it
+is a system binary, not a Ruby dependency. Safe Image detects it at runtime.
 
 `chroma_subsampling: :auto` uses `4:4:4` for PNG-sourced JPEG conversion and
 `4:2:0` otherwise. Pass `"420"`, `"422"`, or `"444"` to force a value.
@@ -337,7 +374,7 @@ These methods are shaped around the image operations Discourse currently
 performs. They are useful outside Discourse too, but the names are deliberately
 boring because they map to common upload-pipeline tasks.
 
-### `SafeImage.resize(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto)`
+### `SafeImage.resize(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
 
 Creates a resized thumbnail-style output.
 
@@ -351,7 +388,7 @@ Backends:
 - `:imagemagick` default compatibility path
 - `:vips` direct libvips path
 
-### `SafeImage.crop(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto)`
+### `SafeImage.crop(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
 
 Creates a north-cropped image. This matches the avatar/optimized-image crop
 shape used by Discourse.
@@ -361,7 +398,7 @@ SafeImage.crop("upload.jpg", "avatar.jpg", 240, 240)
 SafeImage.crop("upload.jpg", "avatar.jpg", 240, 240, backend: :vips)
 ```
 
-### `SafeImage.downsize(from, to, dimensions, backend: :imagemagick, optimize: true, max_pixels: nil, quality: 85, encoder: :auto)`
+### `SafeImage.downsize(from, to, dimensions, backend: :imagemagick, optimize: true, max_pixels: nil, quality: 85, encoder: :auto, chroma_subsampling: :auto)`
 
 Downsizes an image using ImageMagick-style geometry strings.
 
@@ -374,7 +411,7 @@ SafeImage.downsize("large.png", "small.png", "400000@", backend: :vips)
 The direct vips backend supports the geometry forms covered by the test suite:
 percentage, bounding box with `>`, and pixel-area cap with `@`.
 
-### `SafeImage.convert(from, to, format:, quality: nil, optimize: true, max_pixels: nil, encoder: :auto)`
+### `SafeImage.convert(from, to, format:, quality: nil, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
 
 Converts an input image to an explicit output `format:`. Unsupported formats
 raise `SafeImage::UnsupportedFormatError`.
@@ -387,6 +424,7 @@ or `encoder: :imagemagick` to force the compatibility path.
 
 ```ruby
 SafeImage.convert("upload.png", "upload.jpg", format: "jpg", quality: 85)
+SafeImage.convert("upload.png", "upload.jpg", format: "jpg", quality: 85, encoder: :cjpegli)
 SafeImage.convert("upload.heic", "upload.jpg", format: "jpg", quality: 85)
 SafeImage.convert("upload.jpg", "upload.webp", format: "webp", quality: 85)
 ```
@@ -617,6 +655,7 @@ bundle exec rake
 - golden operation tests
 - ImageMagick parity tests
 - ImageMagick safety-policy tests
+- cjpegli integration tests
 - atomic Landlock all-operation tests when Landlock is available
 
 The atomic sandbox suite skips when `landlock` is not installed or unavailable on
