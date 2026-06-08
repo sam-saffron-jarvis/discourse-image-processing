@@ -22,7 +22,7 @@ module SafeImage
 
     DEFAULT_TIMEOUT = 20
     TRUSTED_PATH = "/usr/bin:/bin:/usr/local/bin".freeze
-    PROTECTED_ENV_KEYS = %w[PATH MAGICK_CONFIGURE_PATH MAGICK_TEMPORARY_PATH].freeze
+    PROTECTED_ENV_KEYS = %w[PATH MAGICK_CONFIGURE_PATH MAGICK_TEMPORARY_PATH HOME XDG_CACHE_HOME VIPS_BLOCK_UNTRUSTED].freeze
     IMAGEMAGICK_POLICY_PATH = File.expand_path("imagemagick_policy", __dir__)
     SAFE_ENV = {
       "PATH" => TRUSTED_PATH,

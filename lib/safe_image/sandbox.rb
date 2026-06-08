@@ -36,7 +36,7 @@ module SafeImage
         read: existing_paths([*Landlock::SafeExec.default_read_paths, *runtime_read_paths, *read]),
         write: existing_paths(write),
         execute: existing_paths([*Landlock::SafeExec.default_execute_paths, File.dirname(RbConfig.ruby)]),
-        env: env,
+        env: env.merge("SAFE_IMAGE_SANDBOX_CHILD" => "1"),
         inherit_env: false,
         timeout: timeout,
         rlimits: rlimits,
@@ -73,6 +73,9 @@ module SafeImage
     end
 
     def run_worker!(operation, request)
+      operation = operation.to_s
+      raise ArgumentError, "unsupported sandbox operation: #{operation}" unless OPERATIONS.include?(operation)
+
       require "landlock"
       payload = JSON.dump({ operation: operation, request: request })
       code = <<~'RUBY'
@@ -92,6 +95,12 @@ module SafeImage
 
         payload = JSON.parse(ARGV.fetch(0), symbolize_names: true)
         operation = payload.fetch(:operation).to_s
+        allowed_operations = %w[
+          probe thumbnail type size dimensions info orientation optimize resize crop downsize convert_to_jpeg fix_orientation
+          convert_favicon_to_png frame_count animated? letter_avatar optimize_image! sanitize_svg!
+        ]
+        raise ArgumentError, "unsupported sandbox operation: #{operation}" unless allowed_operations.include?(operation)
+
         request = payload.fetch(:request)
         args = request[:args] || []
         kwargs = deep_symbolize(request[:kwargs] || {})
@@ -121,6 +130,7 @@ module SafeImage
         write: existing_paths([*paths.fetch(:write), Dir.tmpdir]),
         execute: existing_paths([*Landlock::SafeExec.default_execute_paths, File.dirname(RbConfig.ruby)]),
         env: Runner::SAFE_ENV.merge(
+          "SAFE_IMAGE_SANDBOX_CHILD" => "1",
           "GEM_HOME" => ENV["GEM_HOME"].to_s,
           "GEM_PATH" => ENV["GEM_PATH"].to_s,
           "RUBYLIB" => $LOAD_PATH.select { |p| p && File.directory?(p) }.join(File::PATH_SEPARATOR)

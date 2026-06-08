@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
+require "fileutils"
 require "ipaddr"
 require "net/http"
 require "resolv"
 require "tempfile"
+require "time"
+require "tmpdir"
 require "uri"
 
 module SafeImage
@@ -14,7 +17,11 @@ module SafeImage
     DEFAULT_MAX_REDIRECTS = 3
     DEFAULT_OPEN_TIMEOUT = 5
     DEFAULT_READ_TIMEOUT = 10
+    DEFAULT_TOTAL_TIMEOUT = 30
+    DEFAULT_ALLOWED_PORTS = [80, 443].freeze
     USER_AGENT = "safe_image/#{VERSION}".freeze
+
+    SENSITIVE_REDIRECT_HEADERS = %w[authorization cookie proxy-authorization].freeze
 
     CONTENT_TYPE_EXTENSIONS = {
       "image/jpeg" => ".jpg",
@@ -44,7 +51,10 @@ module SafeImage
       "172.16.0.0/12",      # RFC1918 private-use
       "192.0.0.0/24",       # IETF protocol assignments
       "192.0.2.0/24",       # TEST-NET-1
+      "192.31.196.0/24",    # AS112-v4
+      "192.52.193.0/24",    # AMT
       "192.168.0.0/16",     # RFC1918 private-use
+      "192.175.48.0/24",    # direct delegation AS112 service
       "198.18.0.0/15",      # benchmark testing
       "198.51.100.0/24",    # TEST-NET-2
       "203.0.113.0/24",     # TEST-NET-3
@@ -68,20 +78,54 @@ module SafeImage
       "ff00::/8"            # multicast
     ].map { |range| IPAddr.new(range) }.freeze
 
-    def fetch(url, max_bytes: DEFAULT_MAX_BYTES, max_redirects: DEFAULT_MAX_REDIRECTS, open_timeout: DEFAULT_OPEN_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT, allow_private: false, headers: {})
+    def fetch(
+      url,
+      max_bytes: DEFAULT_MAX_BYTES,
+      max_redirects: DEFAULT_MAX_REDIRECTS,
+      open_timeout: DEFAULT_OPEN_TIMEOUT,
+      read_timeout: DEFAULT_READ_TIMEOUT,
+      total_timeout: DEFAULT_TOTAL_TIMEOUT,
+      allow_private: false,
+      allowed_ports: DEFAULT_ALLOWED_PORTS,
+      headers: {}
+    )
       uri = parse_uri(url)
-      response = request(uri, max_bytes: max_bytes, max_redirects: max_redirects, open_timeout: open_timeout, read_timeout: read_timeout, allow_private: allow_private, headers: headers)
-      ext = extension_for(response.fetch(:uri), response.fetch(:content_type))
+      started_at = monotonic_time
 
-      Tempfile.create(["safe-image-remote", ext], binmode: true) do |file|
-        file.write(response.fetch(:body))
+      Tempfile.create(["safe-image-remote", ".bin"], binmode: true) do |file|
+        response = request(
+          uri,
+          io: file,
+          max_bytes: max_bytes,
+          max_redirects: max_redirects,
+          open_timeout: open_timeout,
+          read_timeout: read_timeout,
+          total_timeout: total_timeout,
+          started_at: started_at,
+          allow_private: allow_private,
+          allowed_ports: allowed_ports,
+          headers: headers
+        )
         file.flush
-        yield file.path
+
+        ext = extension_for(response.fetch(:uri), response.fetch(:content_type))
+        path = file.path
+        if File.extname(path) != ext
+          renamed = path.sub(/\.bin\z/, ext)
+          FileUtils.mv(path, renamed)
+          begin
+            yield renamed
+          ensure
+            FileUtils.rm_f(renamed)
+          end
+        else
+          yield path
+        end
       end
     end
 
-    def info(url, max_bytes: DEFAULT_MAX_BYTES, max_redirects: DEFAULT_MAX_REDIRECTS, open_timeout: DEFAULT_OPEN_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT, allow_private: false, headers: {}, max_pixels: nil, animated: false, orientation: false)
-      fetch(url, max_bytes: max_bytes, max_redirects: max_redirects, open_timeout: open_timeout, read_timeout: read_timeout, allow_private: allow_private, headers: headers) do |path|
+    def info(url, max_bytes: DEFAULT_MAX_BYTES, max_redirects: DEFAULT_MAX_REDIRECTS, open_timeout: DEFAULT_OPEN_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT, total_timeout: DEFAULT_TOTAL_TIMEOUT, allow_private: false, allowed_ports: DEFAULT_ALLOWED_PORTS, headers: {}, max_pixels: nil, animated: false, orientation: false)
+      fetch(url, max_bytes: max_bytes, max_redirects: max_redirects, open_timeout: open_timeout, read_timeout: read_timeout, total_timeout: total_timeout, allow_private: allow_private, allowed_ports: allowed_ports, headers: headers) do |path|
         SafeImage.info(path, max_pixels: max_pixels, animated: animated, orientation: orientation)
       end
     end
@@ -94,17 +138,19 @@ module SafeImage
       info(url, **kwargs).type
     end
 
-    def animated?(url, max_bytes: DEFAULT_MAX_BYTES, max_redirects: DEFAULT_MAX_REDIRECTS, open_timeout: DEFAULT_OPEN_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT, allow_private: false, headers: {}, max_pixels: nil)
-      fetch(url, max_bytes: max_bytes, max_redirects: max_redirects, open_timeout: open_timeout, read_timeout: read_timeout, allow_private: allow_private, headers: headers) do |path|
+    def animated?(url, max_bytes: DEFAULT_MAX_BYTES, max_redirects: DEFAULT_MAX_REDIRECTS, open_timeout: DEFAULT_OPEN_TIMEOUT, read_timeout: DEFAULT_READ_TIMEOUT, total_timeout: DEFAULT_TOTAL_TIMEOUT, allow_private: false, allowed_ports: DEFAULT_ALLOWED_PORTS, headers: {}, max_pixels: nil)
+      fetch(url, max_bytes: max_bytes, max_redirects: max_redirects, open_timeout: open_timeout, read_timeout: read_timeout, total_timeout: total_timeout, allow_private: allow_private, allowed_ports: allowed_ports, headers: headers) do |path|
         SafeImage.animated?(path, max_pixels: max_pixels)
       end
     end
 
-    def request(uri, max_bytes:, max_redirects:, open_timeout:, read_timeout:, allow_private:, headers: {})
+    def request(uri, io:, max_bytes:, max_redirects:, open_timeout:, read_timeout:, total_timeout:, started_at:, allow_private:, allowed_ports:, headers: {})
       raise ArgumentError, "too many redirects" if max_redirects < 0
-      validate_uri!(uri, allow_private: allow_private)
+      check_deadline!(started_at, total_timeout)
+      ipaddr = validate_uri!(uri, allow_private: allow_private, allowed_ports: allowed_ports)
 
       http = Net::HTTP.new(uri.host, uri.port)
+      http.ipaddr = ipaddr if ipaddr
       http.use_ssl = uri.scheme == "https"
       http.open_timeout = open_timeout
       http.read_timeout = read_timeout
@@ -114,23 +160,28 @@ module SafeImage
       request["Accept"] = "image/*,*/*;q=0.1"
       headers.each { |key, value| request[key.to_s] = value.to_s }
 
-      body = +"".b
-      final_uri = uri
+      bytes = 0
       content_type = nil
 
       http.request(request) do |response|
+        check_deadline!(started_at, total_timeout)
+
         case response
         when Net::HTTPRedirection
           location = response["location"] or raise Error, "redirect without Location"
-          redirected = uri.merge(location)
+          redirected = parse_uri(uri.merge(location).to_s)
           return request(
             redirected,
+            io: io,
             max_bytes: max_bytes,
             max_redirects: max_redirects - 1,
             open_timeout: open_timeout,
             read_timeout: read_timeout,
+            total_timeout: total_timeout,
+            started_at: started_at,
             allow_private: allow_private,
-            headers: headers
+            allowed_ports: allowed_ports,
+            headers: redirect_headers(headers, from: uri, to: redirected)
           )
         when Net::HTTPSuccess
           content_length = response["content-length"].to_i
@@ -138,15 +189,17 @@ module SafeImage
 
           content_type = response["content-type"].to_s.split(";", 2).first.to_s.downcase
           response.read_body do |chunk|
-            body << chunk
-            raise LimitError, "remote image exceeds #{max_bytes} bytes" if body.bytesize > max_bytes
+            check_deadline!(started_at, total_timeout)
+            bytes += chunk.bytesize
+            raise LimitError, "remote image exceeds #{max_bytes} bytes" if bytes > max_bytes
+            io.write(chunk)
           end
         else
           raise Error, "remote image request failed: HTTP #{response.code}"
         end
       end
 
-      { uri: final_uri, body: body, content_type: content_type }
+      { uri: uri, content_type: content_type, bytes: bytes }
     end
 
     def parse_uri(url)
@@ -158,8 +211,11 @@ module SafeImage
       raise ArgumentError, "invalid remote image URL: #{e.message}"
     end
 
-    def validate_uri!(uri, allow_private:)
-      return if allow_private
+    def validate_uri!(uri, allow_private:, allowed_ports: DEFAULT_ALLOWED_PORTS)
+      unless allow_private || allowed_ports.nil? || allowed_ports.include?(uri.port)
+        raise UnsafePathError, "remote image URL uses a disallowed port"
+      end
+      return nil if allow_private
 
       addresses = Resolv.getaddresses(uri.host)
       raise UnsafePathError, "remote image host did not resolve" if addresses.empty?
@@ -170,10 +226,35 @@ module SafeImage
           raise UnsafePathError, "remote image host resolves to a non-public address"
         end
       end
+
+      # Pin the socket to a vetted address so validation and connection cannot
+      # observe different DNS answers. Prefer IPv4 first for compatibility with
+      # common hosts, but either family is fine because every address above was
+      # checked.
+      addresses.sort_by { |address| address.include?(":") ? 1 : 0 }.first
     end
 
     def blocked_ip?(ip)
       BLOCKED_IP_RANGES.any? { |range| range.include?(ip) }
+    end
+
+    def redirect_headers(headers, from:, to:)
+      return headers if same_origin?(from, to)
+
+      headers.reject { |key, _| SENSITIVE_REDIRECT_HEADERS.include?(key.to_s.downcase) }
+    end
+
+    def same_origin?(a, b)
+      a.scheme == b.scheme && a.host == b.host && a.port == b.port
+    end
+
+    def check_deadline!(started_at, total_timeout)
+      return unless total_timeout
+      raise Error, "remote image request timed out" if monotonic_time - started_at > total_timeout
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def extension_for(uri, content_type)

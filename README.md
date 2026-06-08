@@ -217,15 +217,23 @@ Remote fetching is deliberately conservative:
 
 - only `http` and `https` URLs are accepted
 - redirects are capped
-- open/read timeouts are capped
+- open/read timeouts and an overall `total_timeout` are capped
 - response size is capped by `max_bytes`
+- public remote fetches are limited to ports 80 and 443 by default
+- DNS answers are checked against a special-use address blocklist and the
+  connection is pinned to a vetted IP address to avoid DNS-rebinding/TOCTOU
+  bypasses
+- sensitive caller headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are
+  stripped on cross-origin redirects
 - private, loopback, link-local, multicast, documentation, benchmarking,
   carrier-grade NAT, IPv4-mapped IPv6, NAT64, 6to4/Teredo, and other
   special-use resolved addresses are rejected by default
 - no image decoding happens directly from the socket
 
 Set `allow_private: true` only when the caller has already made an SSRF decision
-or is intentionally probing a trusted internal URL.
+or is intentionally probing a trusted internal URL. Passing `allow_private: true`
+also permits non-standard ports; for public fetches, pass `allowed_ports:` if you
+really need to allow a different port.
 
 ### `SafeImage.remote_size(url, ...)` / `SafeImage.remote_dimensions(url, ...)`
 
@@ -233,6 +241,7 @@ or is intentionally probing a trusted internal URL.
 SafeImage.remote_size(
   "https://example.com/image.jpg",
   max_bytes: 10.megabytes,
+  total_timeout: 30,
   max_pixels: 40_000_000
 )
 # => [1600, 1200]

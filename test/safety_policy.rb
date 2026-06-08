@@ -42,12 +42,26 @@ Dir.mktmpdir do |dir|
   begin
     SafeImage::Runner.run!(
       [command, ps, File.join(dir, "out3.png")],
-      env: { "PATH" => fake_dir, "MAGICK_CONFIGURE_PATH" => "/tmp" }
+      env: {
+        "PATH" => fake_dir,
+        "MAGICK_CONFIGURE_PATH" => "/tmp",
+        "HOME" => fake_dir,
+        "XDG_CACHE_HOME" => fake_dir,
+        "VIPS_BLOCK_UNTRUSTED" => "0"
+      }
     )
     abort "ImageMagick unexpectedly processed PostScript with env override"
   rescue SafeImage::CommandError
   end
   abort "Runner used caller-controlled PATH" if File.exist?(fake_marker)
+  begin
+    txt = File.join(dir, "not-image.txt")
+    File.write(txt, "not an image")
+    SafeImage.convert_to_jpeg(txt, File.join(dir, "sniffed.jpg"))
+    abort "convert_to_jpeg unexpectedly allowed decoder-less ImageMagick sniffing"
+  rescue SafeImage::UnsupportedFormatError
+  end
+
   puts "OK Runner ignores protected env overrides"
 end
 

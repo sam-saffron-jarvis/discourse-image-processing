@@ -55,7 +55,8 @@ module SafeImage
         name = attr.name.to_s
         value = attr.value.to_s
         allowed = ALLOWED_ATTRIBUTES.include?(name) || name.start_with?("aria-")
-        dangerous_value = value.match?(/\b(?:javascript|data):/i) || (value.include?("url(") && value.match?(/https?:/i))
+        normalized_value = value.gsub(/[\u0000-\u001f\u007f\s]+/, "")
+        dangerous_value = normalized_value.match?(/(?:javascript|data):/i) || (normalized_value.include?("url(") && normalized_value.match?(/https?:/i))
         if !allowed || name.downcase.start_with?("on") || dangerous_value
           attributes_to_delete << name
         end

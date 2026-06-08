@@ -37,7 +37,6 @@ module SafeImage
             tmp = Tempfile.new([path.basename(".*").to_s, ".pngquant.png"], path.dirname.to_s)
             tmp_path = Pathname.new(tmp.path)
             tmp.close
-            FileUtils.rm_f(tmp_path)
             begin
               argv = ["pngquant", "--force", "--skip-if-larger", "--output", tmp_path.to_s]
               argv << "--quality=#{quality}" if quality # e.g. "65-90"

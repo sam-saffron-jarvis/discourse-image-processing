@@ -9,7 +9,8 @@ GIF = File.join(FIXTURES, "animated.gif")
 
 blocked = %w[
   0.0.0.0 10.0.0.1 100.64.0.1 127.0.0.1 169.254.1.1 172.16.0.1
-  192.0.0.1 192.0.2.1 192.168.0.1 198.18.0.1 198.51.100.1
+  192.0.0.1 192.0.2.1 192.31.196.1 192.52.193.1 192.168.0.1
+  192.175.48.1 198.18.0.1 198.51.100.1
   203.0.113.1 224.0.0.1 240.0.0.1 255.255.255.255
   :: ::1 ::ffff:127.0.0.1 64:ff9b::808:808 64:ff9b:1::1 100::1
   2001::1 2001:2::1 2001:db8::1 2002::1 fc00::1 fd00::1 fe80::1 ff00::1
@@ -21,6 +22,28 @@ end
 allowed = %w[8.8.8.8 1.1.1.1 2001:4860:4860::8888 2606:4700:4700::1111]
 allowed.each do |address|
   raise "expected #{address} to be allowed" if SafeImage::Remote.blocked_ip?(IPAddr.new(address))
+end
+
+same_origin_headers = SafeImage::Remote.redirect_headers(
+  { "Authorization" => "secret", "Cookie" => "yum" },
+  from: URI("https://example.com/a"),
+  to: URI("https://example.com/b")
+)
+raise "same-origin redirect stripped headers" unless same_origin_headers.key?("Authorization") && same_origin_headers.key?("Cookie")
+
+cross_origin_headers = SafeImage::Remote.redirect_headers(
+  { "Authorization" => "secret", "Cookie" => "yum", "X-Test" => "ok" },
+  from: URI("https://example.com/a"),
+  to: URI("https://evil.example/b")
+)
+raise "cross-origin redirect leaked Authorization" if cross_origin_headers.key?("Authorization")
+raise "cross-origin redirect leaked Cookie" if cross_origin_headers.key?("Cookie")
+raise "cross-origin redirect stripped normal header" unless cross_origin_headers["X-Test"] == "ok"
+
+begin
+  SafeImage::Remote.validate_uri!(URI("https://example.com:81/x"), allow_private: false)
+  abort "remote disallowed port unexpectedly accepted"
+rescue SafeImage::UnsafePathError
 end
 
 server = TCPServer.new("127.0.0.1", 0)

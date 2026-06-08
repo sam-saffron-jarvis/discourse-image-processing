@@ -97,8 +97,8 @@ module SafeImage
       input = PathSafety.ensure_imagemagick_safe!(input)
       output = PathSafety.ensure_imagemagick_safe!(output)
       ext = File.extname(input).delete_prefix(".").downcase
-      decoder = DECODERS[ext]
-      source = decoder ? "#{decoder}:#{input}[0]" : input
+      decoder = DECODERS.fetch(ext) { raise UnsupportedFormatError, "unsupported ImageMagick input format: #{ext.inspect}" }
+      source = "#{decoder}:#{input}[0]"
       argv = [command, source, "-auto-orient", "-background", "white", "-interlace", "none", "-flatten"]
       argv.concat(["-quality", Integer(quality).to_s]) if quality
       argv << output
@@ -146,15 +146,19 @@ module SafeImage
       output = PathSafety.ensure_imagemagick_safe!(output)
       rgb = Array(background_rgb).map { |v| Integer(v) }
       raise ArgumentError, "background_rgb must have three channels" unless rgb.length == 3
+      glyph = letter.to_s.each_grapheme_cluster.first.to_s.gsub("%", "%%")
+      font_name = font.to_s
+      raise ArgumentError, "font contains NUL" if font_name.include?("\0")
+
       argv = [
         command,
         "-size", "#{Integer(size)}x#{Integer(size)}",
         "xc:rgb(#{rgb[0]},#{rgb[1]},#{rgb[2]})",
         "-pointsize", Integer(pointsize).to_s,
         "-fill", "#FFFFFFCC",
-        "-font", font.to_s,
+        "-font", font_name,
         "-gravity", "Center",
-        "-annotate", "-0+34", letter.to_s,
+        "-annotate", "-0+34", glyph,
         "-depth", "8",
         output
       ]
