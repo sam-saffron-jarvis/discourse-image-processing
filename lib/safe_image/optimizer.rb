@@ -9,7 +9,7 @@ module SafeImage
     MAX_PNGQUANT_SIZE = 500_000
 
     def optimize(path, mode: :lossless, strip_metadata: true, quality: nil, timeout: Runner::DEFAULT_TIMEOUT, strict: true)
-      path = Pathname.new(path).expand_path
+      path = Pathname.new(PathSafety.local_path(path)).expand_path
       raise UnsafePathError, "path contains NUL" if path.to_s.include?("\0")
       raise UnsafePathError, "not a file: #{path}" unless path.file?
 

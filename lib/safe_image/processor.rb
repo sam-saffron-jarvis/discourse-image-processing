@@ -122,7 +122,7 @@ module SafeImage
     private
 
     def safe_existing_file!(path)
-      path = Pathname.new(path).expand_path
+      path = Pathname.new(PathSafety.local_path(path)).expand_path
       raise UnsafePathError, "path contains NUL" if path.to_s.include?("\0")
       raise UnsafePathError, "not a file: #{path}" unless path.file?
       ext = path.extname.delete_prefix(".").downcase
