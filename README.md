@@ -301,6 +301,36 @@ The sanitizer removes unsafe elements/attributes such as scripts and event
 handlers. It is intentionally conservative rather than a full browser-grade SVG
 implementation.
 
+## Security posture without Landlock
+
+Without Landlock, Safe Image still hardens the ImageMagick path substantially:
+
+- delegates are disabled
+- filters are disabled
+- `@file` indirection is disabled
+- remote URL coders are disabled
+- Ghostscript/document/vector formats are denied
+- coders are deny-by-default with a small raster allowlist
+- commands are executed with argv arrays, not shell strings
+- command environment and ImageMagick policy path are controlled
+- ImageMagick resource limits are set in the bundled policy
+
+That does **not** make hostile files benign. Raster decoders still parse attacker
+controlled bytes: libjpeg, libpng, libwebp, libheif/HEIC/AVIF, ImageMagick's
+raster decoders, and libvips loaders. If one of those decoders has a memory
+corruption bug or pathological resource-consumption bug, policy alone is not a
+sandbox.
+
+So the intended posture is:
+
+- without Landlock: hardened, centralized image processing with the major
+  ImageMagick delegate/pseudo-protocol foot-guns removed
+- with Landlock: the same hardening plus a real containment boundary around all
+  public operations
+
+Do not describe non-sandboxed operation as making hostile images safe. The honest
+claim is defense-in-depth, not immunity.
+
 ## Atomic Landlock sandboxing
 
 Landlock support is optional, but atomic once enabled.
