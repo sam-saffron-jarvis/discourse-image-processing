@@ -45,11 +45,20 @@ module SafeImage
     end
 
     def sanitize_element!(element)
-      element.elements.to_a.each do |child|
-        if ALLOWED_ELEMENTS.include?(child.name)
-          sanitize_element!(child)
+      element.children.to_a.each do |child|
+        case child
+        when REXML::Element
+          if ALLOWED_ELEMENTS.include?(child.name)
+            sanitize_element!(child)
+          else
+            child.remove
+          end
+        when REXML::CData
+          child.replace_with(REXML::Text.new(child.value.to_s))
+        when REXML::Text
+          # Text is serialized escaped by REXML::Formatters::Default.
         else
-          element.delete_element(child)
+          child.remove
         end
       end
 

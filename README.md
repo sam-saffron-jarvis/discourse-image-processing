@@ -547,7 +547,17 @@ Baseline hardening:
   bypass prevention, request-header allowlists, content-type/extension agreement,
   and probe-before-yield
 - SVG metadata uses a bounded parser; SVG is not handed to ImageMagick for probing
-- SVG sanitising is conservative and allowlist based
+- SVG sanitising is conservative and allowlist based; it rejects `DOCTYPE` and
+  XML processing instructions, removes comments and disallowed elements, converts
+  CDATA to escaped text, and blocks event handlers, external URLs, and
+  `javascript:` / `data:` URL values
+
+SVG sanitising is defense-in-depth for stored bytes. Applications that serve
+user-supplied SVGs directly should still use response-level controls such as a
+restrictive `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, and/or
+attachment/sandbox handling for direct-open routes. Browsers restrict script
+execution when an SVG is embedded as `<img>`, but a top-level SVG document is a
+different sink.
 
 ### Security posture without Landlock
 

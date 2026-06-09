@@ -135,15 +135,60 @@ Dir.mktmpdir do |dir|
   svg = File.join(dir, "bad.svg")
   File.write(svg, <<~SVG)
     <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+      <script>alert(1)</script>
+      <style>@import url(http://evil.example/x.css); rect { fill: red; }</style>
+      <foreignObject><iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe></foreignObject>
+      <image href="http://evil.example/track.png"/>
+      <animate attributeName="x" from="0" to="10"/>
       <rect width="10" height="10" fill="url(http://evil.example/x)" onclick="alert(1)"/>
-      <circle r="2" fill="url(#safe)"/>
+      <a href="javascript:alert(1)"><text>bad</text></a>
+      <use href="#safe"/>
+      <circle id="safe" r="2" fill="url(#safe)"/>
+      <!-- <script>alert(1)</script> -->
+      <text><![CDATA[<script>alert(1)</script>&xss;]]></text>
     </svg>
   SVG
   SafeImage.sanitize_svg!(svg)
   cleaned = File.read(svg)
+  abort "SVG sanitizer kept script element/text" if cleaned.match?(/<script/i)
+  abort "SVG sanitizer kept style element" if cleaned.match?(/<style/i)
+  abort "SVG sanitizer kept foreignObject" if cleaned.match?(/foreignObject/i)
+  abort "SVG sanitizer kept iframe/object/embed/image" if cleaned.match?(/<(?:iframe|object|embed|image)\b/i)
+  abort "SVG sanitizer kept animation" if cleaned.match?(/<animate/i)
   abort "SVG sanitizer kept external url" if cleaned.include?("evil.example")
   abort "SVG sanitizer kept event handler" if cleaned.include?("onclick")
+  abort "SVG sanitizer kept javascript href" if cleaned.match?(/javascript/i)
+  abort "SVG sanitizer stripped fragment href" unless cleaned.include?("href='#safe'") || cleaned.include?("href=\"#safe\"")
   abort "SVG sanitizer stripped fragment url" unless cleaned.include?("url(#safe)")
+  abort "SVG sanitizer kept comment" if cleaned.include?("<!--")
+  abort "SVG sanitizer kept CDATA" if cleaned.include?("CDATA")
+  abort "SVG sanitizer failed to escape text" unless cleaned.include?("&lt;script&gt;") && cleaned.include?("&amp;xss;")
+
+  encoded_url_svg = File.join(dir, "encoded-url.svg")
+  File.write(encoded_url_svg, <<~SVG)
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+      <rect width="10" height="10" fill="url(&#104;ttp://evil.example/x)"/>
+      <a href="jav&#x61;script:alert(1)"><text>bad</text></a>
+    </svg>
+  SVG
+  SafeImage.sanitize_svg!(encoded_url_svg)
+  encoded_cleaned = File.read(encoded_url_svg)
+  abort "SVG sanitizer kept entity-encoded URL" if encoded_cleaned.include?("evil.example")
+  abort "SVG sanitizer kept entity-encoded javascript" if encoded_cleaned.match?(/javascript/i)
+
+  dtd_entity_svg = File.join(dir, "dtd-entity.svg")
+  File.write(dtd_entity_svg, <<~SVG)
+    <?xml version="1.0"?>
+    <!DOCTYPE svg [ <!ENTITY xss "<script>alert(1)</script>"> ]>
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+      <text>&xss;</text>
+    </svg>
+  SVG
+  begin
+    SafeImage.sanitize_svg!(dtd_entity_svg)
+    abort "SVG sanitizer accepted DTD entity payload"
+  rescue SafeImage::InvalidImageError
+  end
 
   huge_svg = File.join(dir, "huge.svg")
   File.write(huge_svg, '<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000"></svg>')
