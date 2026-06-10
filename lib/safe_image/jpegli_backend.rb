@@ -65,7 +65,9 @@ module SafeImage
         raise Error, "cjpegli did not create output" unless tmp_path.file? && File.size(tmp_path).positive?
         FileUtils.mv(tmp_path, output_path)
 
-        info = Native.probe(output_path.to_s)
+        # cjpegli works without libvips; fall back to identify for the
+        # output dimensions when the native header read is unavailable.
+        info = VipsGlue.available? ? Native.probe(output_path.to_s) : ImageMagickBackend.probe(output_path.to_s)
         {
           input_format: input_format,
           output_format: "jpg",

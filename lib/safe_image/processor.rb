@@ -12,7 +12,7 @@ module SafeImage
     # skip the optimize pass instead of erroring.
     OPTIMIZABLE_OUTPUTS = %w[jpg png].freeze
 
-    def initialize(max_pixels: nil, backend: :vips, execution: :inline, encoder: :auto, chroma_subsampling: :auto)
+    def initialize(max_pixels: nil, backend: :auto, execution: :inline, encoder: :auto, chroma_subsampling: :auto)
       @max_pixels = max_pixels
       @backend = backend.to_sym
       @execution = execution.to_sym
@@ -87,15 +87,16 @@ module SafeImage
       end
 
       output.dirname.mkpath
+      backend = resolved_backend
       info =
-        if out_format == "jpg" && use_jpegli_for_generated_jpeg?(input)
-          jpegli_thumbnail(input: input, output: output, width: width, height: height, quality: quality, source_format: input.extname.delete_prefix(".").downcase)
+        if out_format == "jpg" && use_jpegli_for_generated_jpeg?(backend)
+          jpegli_thumbnail(input: input, output: output, width: width, height: height, quality: quality, source_format: input.extname.delete_prefix(".").downcase, backend: backend)
         else
-          case @backend
+          case backend
           when :vips
             Native.thumbnail(input.to_s, output.to_s, width, height, out_format, quality, @max_pixels)
           when :imagemagick, :magick
-            probe_info = Native.probe(input.to_s)
+            probe_info = VipsGlue.available? ? Native.probe(input.to_s) : ImageMagickBackend.probe(input.to_s)
             validate_pixels!(probe_info.fetch(:width), probe_info.fetch(:height))
             ImageMagickBackend.thumbnail(
               input: input.to_s,
@@ -106,7 +107,7 @@ module SafeImage
               quality: quality
             )
           else
-            raise ArgumentError, "unknown backend: #{@backend.inspect}"
+            raise ArgumentError, "unknown backend: #{backend.inspect}"
           end
         end
 
@@ -123,7 +124,7 @@ module SafeImage
         width: info.fetch(:width),
         height: info.fetch(:height),
         filesize: File.size(output),
-        backend: result_backend(info),
+        backend: result_backend(info, backend),
         duration_ms: info.fetch(:duration_ms),
         optimizer: opt_info&.fetch(:tools, nil)
       )
@@ -131,10 +132,23 @@ module SafeImage
 
     private
 
-    def use_jpegli_for_generated_jpeg?(input)
+    # :auto prefers the native path and routes to ImageMagick only when
+    # libvips itself is unavailable; explicit :vips stays fail-closed.
+    def resolved_backend
+      case @backend
+      when :auto
+        VipsGlue.available? ? :vips : :imagemagick
+      when :vips, :imagemagick, :magick
+        @backend
+      else
+        raise ArgumentError, "unknown backend: #{@backend.inspect}"
+      end
+    end
+
+    def use_jpegli_for_generated_jpeg?(backend)
       case @encoder
       when :auto
-        @backend == :vips && JpegliBackend.available?
+        backend == :vips && JpegliBackend.available?
       when :cjpegli
         true
       when :vips, :imagemagick, :magick
@@ -144,9 +158,9 @@ module SafeImage
       end
     end
 
-    def jpegli_thumbnail(input:, output:, width:, height:, quality:, source_format:)
+    def jpegli_thumbnail(input:, output:, width:, height:, quality:, source_format:, backend:)
       raise UnsupportedFormatError, "cjpegli is not installed" unless JpegliBackend.available?
-      raise ArgumentError, "encoder: :cjpegli currently requires backend: :vips" unless @backend == :vips
+      raise ArgumentError, "encoder: :cjpegli currently requires backend: :vips" unless backend == :vips
 
       output.dirname.mkpath
       Tempfile.create([output.basename(".*").to_s, ".safe-image.png"], output.dirname.to_s) do |tmp|
@@ -170,12 +184,9 @@ module SafeImage
       format == "jpeg" ? "jpg" : format
     end
 
-    def result_backend(info)
-      if info[:encoder] == "cjpegli"
-        "#{@backend == :vips ? "libvips-direct" : "imagemagick"}+cjpegli"
-      else
-        @backend == :vips ? "libvips-direct" : "imagemagick"
-      end
+    def result_backend(info, backend)
+      base = backend == :vips ? "libvips-direct" : "imagemagick"
+      info[:encoder] == "cjpegli" ? "#{base}+cjpegli" : base
     end
 
     def safe_existing_file!(path)

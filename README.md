@@ -5,7 +5,8 @@ Safe Image is a small Ruby image-processing boundary for untrusted uploads.
 It gives an application one narrow API for probing, thumbnailing, resizing,
 cropping, converting, optimising, SVG sanitising, animation checks, dominant
 colour extraction, favicon conversion, and letter-avatar generation. The default fast path uses a tiny
-native extension that calls `libvips` directly. Compatibility paths use
+Fiddle binding that drives `libvips` directly — pure Ruby, nothing compiles
+at install time. Compatibility paths use
 ImageMagick, but with shell-free command execution and a restrictive bundled
 policy.
 
@@ -27,7 +28,8 @@ What it does:
 - enables libvips' untrusted-operation block in-process (deliberately
   re-enabling only the libjxl loader/saver, which libvips tags untrusted,
   because JPEG XL is part of the supported input surface)
-- blocks libvips ImageMagick loader classes in the native extension
+- blocks libvips ImageMagick loader classes in the libvips binding, which
+  itself exposes only the operations the gem invokes
 - disables libvips cache by default in-process
 - strips metadata on generated images where applicable
 - rejects symlinked local input/output paths and symlinked path components for
@@ -48,8 +50,18 @@ libvips path into generic ImageMagick decoding.
 
 ## Install
 
-Install the [dependencies](#dependencies) below first — the native extension
-compiles against libvips at install time.
+Nothing compiles at install time: libvips is bound at runtime through Fiddle
+(`libvips.so.42` is dlopened on first use; `SAFE_IMAGE_LIBVIPS` overrides the
+library name authoritatively). Install the runtime
+[dependencies](#dependencies) below; to fail fast at boot rather than on the
+first image operation, call `SafeImage::VipsGlue.init!` during startup.
+
+libvips is strongly recommended but not mandatory: on a host with only
+ImageMagick, every `backend: :auto` operation routes through the ImageMagick
+compatibility paths and the pure-Ruby paths (SVG, ICO metadata) are
+unaffected. Explicit `backend: :vips` calls fail closed with
+`SafeImage::VipsUnavailableError`, and `SafeImage::VipsGlue.available?`
+reports the state.
 
 ```bash
 gem build safe_image.gemspec
@@ -86,8 +98,7 @@ Debian / Ubuntu:
 
 ```bash
 sudo apt-get install --no-install-recommends \
-  build-essential pkg-config libvips-dev \
-  imagemagick jpegoptim pngquant oxipng libjpeg-turbo-progs
+  libvips42 imagemagick jpegoptim pngquant oxipng libjpeg-turbo-progs
 ```
 
 `oxipng` is packaged from Debian 13 / Ubuntu 24.04; on older releases install
@@ -98,7 +109,7 @@ detected at runtime.
 Arch:
 
 ```bash
-sudo pacman -S --needed base-devel pkgconf libvips \
+sudo pacman -S --needed libvips \
   imagemagick jpegoptim pngquant oxipng libjpeg-turbo libjxl
 ```
 
@@ -108,7 +119,7 @@ sudo pacman -S --needed base-devel pkgconf libvips \
 
 | Dependency | Kind | Needed for | Without it |
 | --- | --- | --- | --- |
-| `libvips` (headers + library, via `pkg-config vips`) | **required** | compiling the native extension; every fast-path operation | gem does not install |
+| `libvips` runtime library (`libvips.so.42`; Debian: `libvips42` ≥ 8.13) | strongly recommended | the fast path for every operation, bound via Fiddle at first use | `backend: :auto` routes everything through ImageMagick instead; explicit `backend: :vips` raises `VipsUnavailableError` |
 | ImageMagick (`magick`/`convert`, `identify`) | optional | the explicit `backend: :imagemagick` opt-in paths, and ICO-input routing for the transform operations | ICO transforms and explicit `:imagemagick` calls raise; everything else runs natively |
 | `jpegoptim` | required for JPEG `optimize` | lossless JPEG optimisation and metadata stripping | JPEG `optimize` raises in strict mode |
 | `oxipng` | required for PNG `optimize` | lossless PNG optimisation | PNG `optimize` raises in strict mode |
@@ -157,6 +168,7 @@ require "safe_image"
 %w[magick identify jpegoptim oxipng pngquant jpegtran cjpegli].each do |tool|
   puts format("%-10s %s", tool, SafeImage::Runner.available?(tool) ? "ok" : "missing")
 end
+puts format("%-10s %s", "libvips", SafeImage::VipsGlue.available? ? "ok" : "unavailable (ImageMagick fallback)")
 puts format("%-10s %s", "sandbox", SafeImage.sandbox_available? ? "ok" : "unavailable")
 ```
 
@@ -229,7 +241,7 @@ result = SafeImage.thumbnail(
   format: nil,              # inferred from output extension when nil
   quality: 85,
   max_pixels: 40_000_000,
-  backend: :vips,           # :vips or :imagemagick
+  backend: :auto,           # :auto (vips, or ImageMagick when vips is absent), :vips, :imagemagick
   optimize: true,
   optimize_mode: :lossless, # :lossless or :lossy for PNG optimisation
   execution: :inline,       # :inline, :sandbox, :sandbox_if_available
@@ -689,7 +701,7 @@ Baseline hardening:
   process-group timeout cleanup are controlled
 - libvips loaders are selected explicitly from an allowlist
 - libvips' untrusted-operation block is enabled in-process
-- libvips ImageMagick loader classes are blocked in the native extension
+- libvips ImageMagick loader classes are blocked in the libvips binding
 - libvips cache is disabled by default in-process
 - local untrusted input/output paths reject symlinks and symlinked path components
 - generated images strip metadata where applicable
@@ -810,7 +822,8 @@ sandbox sweep over the full public operation list.
 
 ```bash
 bundle install
-bundle exec rake          # compile the native extension and run the tests
+bundle exec rake          # run the tests (nothing compiles)
+docker/run.sh             # run the suite on Debian bookworm's packaged libvips 8.14
 bundle exec rubocop       # lint
 ```
 

@@ -410,9 +410,17 @@ module SafeImage
 
     def convert_favicon_to_png(from, to, optimize: true, max_pixels: nil)
       output = PathSafety.ensure_safe_output_path!(to).to_s
-      info = Ico.convert_to_png(from, output, max_pixels: max_pixels)
+      begin
+        info = Ico.convert_to_png(from, output, max_pixels: max_pixels)
+        backend_name = "ico-ruby+libvips"
+      rescue VipsUnavailableError
+        # The Ruby parser needs libvips to encode the extracted pixels; on
+        # vips-less hosts the whole conversion runs through ImageMagick.
+        info = ImageMagickBackend.convert_ico_to_png(input: Pathname.new(from).expand_path.to_s, output: output)
+        backend_name = "imagemagick"
+      end
       Optimizer.optimize(output, mode: :lossless, strip_metadata: true) if optimize
-      result_from_info(from, output, info, "ico-ruby+libvips")
+      result_from_info(from, output, info, backend_name)
     end
 
     def frame_count(path, max_pixels: nil)

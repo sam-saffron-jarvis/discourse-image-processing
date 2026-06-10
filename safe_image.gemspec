@@ -13,27 +13,26 @@ Gem::Specification.new do |spec|
   spec.email = ["sam@discourse.org"]
   spec.required_ruby_version = ">= 3.1"
 
-  # Explicit allowlist: lib/ also holds the compiled extension (*.so) after a
-  # local build, which must never ship in the source gem.
+  # Explicit allowlist of shipped files.
   spec.files = Dir[
     "lib/**/*.rb",
     "lib/safe_image/RT_sRGB.icm",
     "lib/safe_image/imagemagick_policy/policy.xml",
     "lib/safe_image/fonts/DejaVuSans.ttf",
     "lib/safe_image/fonts/DEJAVU-LICENSE",
-    "ext/**/*.{c,rb}",
     "LICENSE",
     "README.md",
     "SECURITY.md"
   ]
   spec.require_paths = ["lib"]
-  spec.extensions = ["ext/safe_image_native/extconf.rb"]
 
+  # libvips is bound at runtime through Fiddle (stdlib today, a bundled gem
+  # from Ruby 3.5); nothing compiles at install time.
+  spec.add_runtime_dependency "fiddle", ">= 1.0"
   spec.add_runtime_dependency "rexml", "~> 3.4"
 
   spec.add_development_dependency "minitest", "~> 5.25"
   spec.add_development_dependency "rake", "~> 13.0"
-  spec.add_development_dependency "rake-compiler", "~> 1.2"
   spec.add_development_dependency "rubocop-discourse", "~> 3.18"
 
   spec.metadata = {

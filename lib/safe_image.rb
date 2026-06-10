@@ -5,6 +5,13 @@ require_relative "safe_image/version"
 module SafeImage
   class Error < StandardError; end
   class UnsupportedFormatError < Error; end
+
+  # Raised when libvips cannot be loaded at runtime. Subclasses
+  # UnsupportedFormatError so the :auto backend routing treats a missing
+  # libvips like any other missing capability and falls back to the
+  # ImageMagick compatibility paths; explicit backend: :vips calls fail
+  # closed with this error.
+  class VipsUnavailableError < UnsupportedFormatError; end
   class UnsafePathError < Error; end
   class InvalidImageError < Error; end
   class LimitError < Error; end
@@ -192,9 +199,10 @@ module SafeImage
         begin
           VipsBackend.dominant_color(path, max_pixels: max_pixels)
         rescue UnsupportedFormatError
-          if File.extname(PathSafety.local_path(path)).downcase == ".ico"
+          begin
+            raise unless File.extname(PathSafety.local_path(path)).downcase == ".ico"
             Ico.dominant_color(path, max_pixels: max_pixels)
-          else
+          rescue UnsupportedFormatError
             imagemagick_dominant_color(path, max_pixels: max_pixels)
           end
         end
@@ -243,7 +251,7 @@ module SafeImage
     Remote.fetch(url, **kwargs, &block)
   end
 
-  def thumbnail(input:, output:, width:, height:, format: nil, quality: 85, max_pixels: nil, backend: :vips, optimize: false, optimize_mode: :lossless, execution: :inline, encoder: :auto, chroma_subsampling: :auto)
+  def thumbnail(input:, output:, width:, height:, format: nil, quality: 85, max_pixels: nil, backend: :auto, optimize: false, optimize_mode: :lossless, execution: :inline, encoder: :auto, chroma_subsampling: :auto)
     maybe_sandbox(
       :thumbnail,
       kwargs: {

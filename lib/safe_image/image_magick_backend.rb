@@ -284,7 +284,9 @@ module SafeImage
       Runner.run!(argv, timeout: timeout)
       duration_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000
 
-      info = Native.probe(output)
+      # Output dimensions via the fast native header read, or identify when
+      # libvips is not installed (this backend must work without it).
+      info = VipsGlue.available? ? Native.probe(output) : probe(output)
       {
         input_format: input_format == "jpeg" ? "jpg" : input_format,
         output_format: output_format == "jpeg" ? "jpg" : output_format,
