@@ -35,6 +35,9 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "minitest", "~> 5.25"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rubocop-discourse", "~> 3.18"
+  # Exercises the Landlock sandbox tests (they skip when unavailable);
+  # intentionally NOT a runtime dependency — see README.
+  spec.add_development_dependency "landlock"
 
   spec.metadata = {
     "homepage_uri" => spec.homepage,
