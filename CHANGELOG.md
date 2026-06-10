@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Remote fetches reject bad responses from the headers alone.** The
+  `Content-Type` allowlist and content-type/extension agreement checks now run
+  before any body bytes are read (previously the body was downloaded first and
+  rejected afterwards), and the first bytes of the body must be compatible
+  with the claimed format's magic bytes — an obviously mislabeled body is
+  dropped after the first chunk instead of being downloaded to `max_bytes`.
+- **Remote metadata helpers download only what the answer needs.**
+  `remote_size`, `remote_type`, `remote_info` and `remote_animated?` now probe
+  the partially-downloaded file at growing thresholds (64KB, 256KB, ...) and
+  abort the transfer once the answer is final, instead of always downloading
+  up to `max_bytes`. Early answers are only trusted when more data cannot
+  change them: "not animated" still requires the complete file (truncated
+  animations undercount frames), SVG metadata still downloads the whole
+  document so the SVG size cap keeps its meaning, and any prefix probe
+  failure falls back to the full download with unchanged validation and
+  error behaviour. `fetch_remote` and `remote_dominant_color` still download
+  the complete body.
+
 ## [0.2.0] - 2026-06-10
 
 The host's whole image-processing posture is now decided in one place, once,

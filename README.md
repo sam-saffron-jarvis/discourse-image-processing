@@ -367,8 +367,26 @@ SafeImage.dominant_color("upload.png") # => "6F745E"
 
 These helpers are intended to cover `FastImage.size(url)` / `FastImage.type(url)`
 style use cases without another Ruby dependency. They use only Ruby stdlib
-`Net::HTTP`, download to a tempfile with a byte cap, then run the normal Safe
-Image local metadata path on that tempfile.
+`Net::HTTP` and stream to a tempfile with a byte cap.
+
+Like FastImage, the metadata helpers (`remote_size`, `remote_type`,
+`remote_info`, `remote_animated?`) download as little as possible: the normal
+Safe Image local metadata path probes the partially-downloaded tempfile as
+bytes arrive (first at 64KB, then at growing thresholds) and the transfer is
+aborted as soon as the answer is final — typically after the first 64KB.
+Early answers are only trusted when more data cannot change them:
+
+- "not animated" is reported only from the complete file, because a truncated
+  animation undercounts frames; "animated" is final as soon as a second frame
+  is seen
+- SVG metadata always downloads the whole document, so the SVG parser's total
+  size cap keeps its meaning
+- a probe failure on a prefix just means the download continues; a file that
+  never yields an early answer is downloaded and validated exactly like a
+  `fetch_remote` download
+
+`fetch_remote` and `remote_dominant_color` need the complete body and always
+download it (up to `max_bytes`).
 
 Remote fetching is deliberately conservative:
 
@@ -392,9 +410,14 @@ Remote fetching is deliberately conservative:
 - private, loopback, link-local, multicast, documentation, benchmarking,
   carrier-grade NAT, IPv4-mapped IPv6, NAT64, 6to4/Teredo, and other
   special-use resolved addresses are rejected by default
-- no image decoding happens directly from the socket
+- no image decoding happens directly from the socket; probes only ever see the
+  on-disk tempfile
 - the final response `Content-Type` must be an allowed image type and must agree
-  with an image-looking URL extension when one is present
+  with an image-looking URL extension when one is present — both are enforced
+  from the response headers, before any body bytes are downloaded
+- the first bytes of the body must be compatible with the claimed format's
+  magic bytes (SVG, which has no signature, is exempt); an obviously mislabeled
+  body is dropped after the first chunk instead of being downloaded to the cap
 - downloaded content is probed before `fetch_remote` yields the tempfile, so the
   raw downloader cannot be used as a blind extension-based file saver
 - SVG remote metadata uses the same bounded SVG metadata parser after download;

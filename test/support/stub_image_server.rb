@@ -7,11 +7,19 @@ require "socket"
 #
 # Routes map a request path to either { content_type:, body: } for a 200
 # response or { redirect: } for a 302.
+#
+# Bodies are written in small chunks and the per-path count of bytes actually
+# handed to the socket is recorded, so tests can assert that a client aborted
+# a download early. A client going away mid-body is expected, not an error.
 class StubImageServer
   attr_reader :port
 
+  BODY_CHUNK_BYTES = 8 * 1024
+
   def initialize(routes)
     @routes = routes
+    @bytes_sent = {}
+    @mutex = Mutex.new
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr[1]
     @running = true
@@ -20,6 +28,12 @@ class StubImageServer
 
   def url(path)
     "http://127.0.0.1:#{@port}#{path}"
+  end
+
+  # Body bytes written to the socket for the most recent request to path.
+  # An over-estimate of what the client read by at most the socket buffers.
+  def bytes_sent(path)
+    @mutex.synchronize { @bytes_sent.fetch(path, 0) }
   end
 
   def shutdown
@@ -38,6 +52,8 @@ class StubImageServer
         respond(socket, read_request_path(socket))
       rescue IOError, Errno::EBADF
         break
+      rescue SystemCallError
+        # Client aborted the connection; keep serving.
       ensure
         socket&.close
       end
@@ -61,7 +77,21 @@ class StubImageServer
     else
       body = route.fetch(:body)
       socket.write "HTTP/1.1 200 OK\r\nContent-Type: #{route.fetch(:content_type)}\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n"
-      socket.write body
+      write_body_counted(socket, path, body)
+    end
+  end
+
+  def write_body_counted(socket, path, body)
+    offset = 0
+    while offset < body.bytesize
+      chunk = body.byteslice(offset, BODY_CHUNK_BYTES)
+      begin
+        socket.write(chunk)
+      rescue SystemCallError, IOError
+        break
+      end
+      offset += chunk.bytesize
+      @mutex.synchronize { @bytes_sent[path] = offset }
     end
   end
 end
