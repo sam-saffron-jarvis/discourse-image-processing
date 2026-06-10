@@ -2,6 +2,7 @@
 
 require "pathname"
 require "rexml/document"
+require "rexml/parsers/pullparser"
 
 module SafeImage
   module SvgMetadata
@@ -31,14 +32,13 @@ module SafeImage
     end
 
     def dimensions(path, max_pixels: nil, max_bytes: MAX_SVG_BYTES)
-      path = safe_svg_path(path)
-      doc = parse(path, max_bytes: max_bytes)
-      root = doc.root
-      width = parse_length(root.attributes["width"])
-      height = parse_length(root.attributes["height"])
+      xml = read_svg(path, max_bytes: max_bytes)
+      _name, attributes = scan_svg!(xml)
+      width = parse_length(attributes["width"])
+      height = parse_length(attributes["height"])
 
       unless width && height
-        view_box = parse_view_box(root.attributes["viewBox"])
+        view_box = parse_view_box(attributes["viewBox"])
         width ||= view_box&.fetch(2)
         height ||= view_box&.fetch(3)
       end
@@ -46,7 +46,22 @@ module SafeImage
       validate_dimensions!(width, height, max_pixels: max_pixels)
     end
 
+    # Builds the full REXML tree. Used only by the SVG sanitizer, which needs to
+    # walk and rewrite the document; metadata reads go through the DOM-free
+    # streaming path above. The streaming validation runs first so a document
+    # that breaches the structural caps is rejected before the tree is built.
     def parse(path, max_bytes: MAX_SVG_BYTES)
+      xml = read_svg(path, max_bytes: max_bytes)
+      scan_svg!(xml)
+      doc = REXML::Document.new(xml)
+      raise InvalidImageError, "SVG root required" unless doc.root&.name == "svg"
+
+      doc
+    rescue REXML::ParseException => e
+      raise InvalidImageError, "invalid SVG: #{e.message}"
+    end
+
+    def read_svg(path, max_bytes: MAX_SVG_BYTES)
       path = safe_svg_path(path)
       size = File.size(path)
       raise LimitError, "SVG exceeds #{max_bytes} bytes" if size > max_bytes
@@ -54,13 +69,7 @@ module SafeImage
       xml = File.binread(path, max_bytes + 1)
       raise LimitError, "SVG exceeds #{max_bytes} bytes" if xml.bytesize > max_bytes
       reject_unsafe_xml!(xml)
-      doc = REXML::Document.new(xml)
-      raise InvalidImageError, "SVG root required" unless doc.root&.name == "svg"
-
-      validate_tree!(doc.root)
-      doc
-    rescue REXML::ParseException => e
-      raise InvalidImageError, "invalid SVG: #{e.message}"
+      xml
     end
 
     def safe_svg_path(path)
@@ -110,23 +119,44 @@ module SafeImage
       [width.ceil, height.ceil]
     end
 
-    def validate_tree!(root)
-      counters = { elements: 0, attributes: 0 }
-      validate_element!(root, depth: 0, counters: counters)
-    end
+    # Streams the document with a pull parser, enforcing the structural caps as
+    # events arrive, so a hostile "millions of tiny elements" document is
+    # rejected at the cap without ever retaining the multi-million-object DOM
+    # that a parse-then-validate approach would build first. Returns the root
+    # element's name and its attributes hash.
+    def scan_svg!(xml)
+      parser = REXML::Parsers::PullParser.new(xml)
+      depth = -1
+      elements = 0
+      attributes = 0
+      root_name = nil
+      root_attributes = nil
 
-    def validate_element!(element, depth:, counters:)
-      raise LimitError, "SVG nesting exceeds #{MAX_SVG_DEPTH}" if depth > MAX_SVG_DEPTH
+      while parser.has_next?
+        event = parser.pull
+        if event.start_element?
+          depth += 1
+          raise LimitError, "SVG nesting exceeds #{MAX_SVG_DEPTH}" if depth > MAX_SVG_DEPTH
 
-      counters[:elements] += 1
-      raise LimitError, "SVG has too many elements" if counters[:elements] > MAX_SVG_ELEMENTS
+          elements += 1
+          raise LimitError, "SVG has too many elements" if elements > MAX_SVG_ELEMENTS
 
-      counters[:attributes] += element.attributes.length
-      raise LimitError, "SVG has too many attributes" if counters[:attributes] > MAX_SVG_ATTRIBUTES
+          attributes += event[1].size
+          raise LimitError, "SVG has too many attributes" if attributes > MAX_SVG_ATTRIBUTES
 
-      element.elements.each do |child|
-        validate_element!(child, depth: depth + 1, counters: counters)
+          if root_name.nil?
+            root_name = event[0]
+            root_attributes = event[1]
+          end
+        elsif event.end_element?
+          depth -= 1
+        end
       end
+
+      raise InvalidImageError, "SVG root required" unless root_name == "svg"
+      [root_name, root_attributes]
+    rescue REXML::ParseException => e
+      raise InvalidImageError, "invalid SVG: #{e.message}"
     end
   end
 end

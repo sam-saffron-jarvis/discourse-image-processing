@@ -69,6 +69,24 @@ module SafeImage
       assert_raises(LimitError) { SafeImage.size(svg) }
     end
 
+    # A document that stays under the byte cap but packs hundreds of thousands of
+    # tiny elements must be rejected by the element cap while streaming, not after
+    # a full DOM has been built. Parsing-then-validating allocated ~6.8M objects
+    # for a 1 MiB input; the streaming scan aborts at the 10k-element cap.
+    def test_rejects_element_bomb_without_building_full_dom
+      head = %(<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">)
+      count = (SvgMetadata::MAX_SVG_BYTES - head.bytesize - "</svg>".bytesize) / "<g/>".bytesize
+      bomb = write_tmp("bomb.svg", "#{head}#{"<g/>" * count}</svg>")
+
+      GC.start
+      before = GC.stat(:total_allocated_objects)
+      assert_raises(LimitError) { SafeImage.size(bomb) }
+      allocated = GC.stat(:total_allocated_objects) - before
+
+      assert_operator allocated, :<, 1_000_000,
+                      "rejecting the element bomb allocated #{allocated} objects; the scan should abort before building the DOM"
+    end
+
     def test_rejects_svg_content_without_svg_extension
       txt = write_tmp("not-svg.txt", '<svg width="1" height="1"></svg>')
       assert_raises(UnsupportedFormatError) { SafeImage.size(txt) }

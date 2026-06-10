@@ -2,12 +2,15 @@
 
 require "fileutils"
 require "ipaddr"
-require "net/http"
-require "resolv"
 require "tempfile"
 require "time"
 require "tmpdir"
 require "uri"
+# net/http and resolv are required lazily inside the methods that fetch, not at
+# load time: requiring them pulls in resolv, which (Ruby 3.4+) reads
+# /etc/resolv.conf eagerly. The Landlock-sandboxed worker loads this file but
+# never performs remote fetches, and on hosts where /etc/resolv.conf is a
+# symlink into /run the sandbox denies that read and the worker dies at boot.
 
 module SafeImage
   module Remote
@@ -159,6 +162,7 @@ module SafeImage
     end
 
     def request(uri, io:, max_bytes:, max_redirects:, open_timeout:, read_timeout:, total_timeout:, started_at:, allow_private:, allowed_ports:, headers: {})
+      require "net/http"
       raise ArgumentError, "too many redirects" if max_redirects < 0
       check_deadline!(started_at, total_timeout)
       ipaddr = validate_uri!(uri, allow_private: allow_private, allowed_ports: allowed_ports)
@@ -235,6 +239,7 @@ module SafeImage
       end
       return nil if allow_private
 
+      require "resolv"
       resolver = Resolv::DNS.new
       resolver.timeouts = [2, 2]
       addresses = resolver.getaddresses(uri.host).map(&:to_s)
