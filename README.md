@@ -52,7 +52,9 @@ libvips path into generic ImageMagick decoding.
 
 Nothing compiles at install time: libvips is bound at runtime through Fiddle
 (`libvips.so.42` is dlopened on first use; `SAFE_IMAGE_LIBVIPS` overrides the
-library name authoritatively). Install the runtime
+library name authoritatively). libvips' GLib warnings about rejected input
+(e.g. "Not a PNG file") are silenced — failures surface as exceptions
+instead; set `SAFE_IMAGE_VIPS_WARNINGS=1` to restore them for debugging. Install the runtime
 [dependencies](#dependencies) below; to fail fast at boot rather than on the
 first image operation, call `SafeImage::VipsGlue.init!` during startup.
 

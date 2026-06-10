@@ -95,6 +95,7 @@ module SafeImage
             [name, Fiddle::Function.new(address, args.map { |t| TYPE.fetch(t) }, TYPE.fetch(ret))]
           end
 
+          silence_vips_log!
           raise Error, "vips_init failed: #{error_message}" if c(:vips_init, "safe_image") != 0
 
           major = c(:vips_version, 0)
@@ -256,6 +257,23 @@ module SafeImage
         c(:vips_cache_set_max, 0)
         c(:vips_cache_set_max_mem, 0)
         c(:vips_cache_set_max_files, 0)
+      end
+
+      # Hostile input is expected here; libvips' GLib warnings about it (for
+      # example "Not a PNG file") would otherwise litter stderr on every
+      # rejected upload. Failures still surface as exceptions with the same
+      # detail. Setting VIPS_WARNING makes vips_init install its own C-level
+      # no-op log handler — this must NOT be done with a Ruby callback, which
+      # libvips may invoke from non-Ruby threads and crash the VM. Set
+      # SAFE_IMAGE_VIPS_WARNINGS=1 to keep the warnings.
+      def silence_vips_log!
+        if ENV["SAFE_IMAGE_VIPS_WARNINGS"] == "1"
+          # VIPS_WARNING may be inherited from a parent process where this
+          # gem set it; the explicit opt-in to warnings wins.
+          ENV.delete("VIPS_WARNING")
+        else
+          ENV["VIPS_WARNING"] ||= "1"
+        end
       end
 
       def resolve_gtypes!

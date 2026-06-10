@@ -68,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `convert_favicon_to_png` extracts the largest ICO entry rather than the
   last one, and `probe` on ICO reports the largest entry's dimensions from a
   pure-Ruby directory parse.
+- libvips' GLib warnings about rejected input (e.g. "Not a PNG file") are
+  suppressed by default — failures already surface as exceptions; set
+  `SAFE_IMAGE_VIPS_WARNINGS=1` to restore them for debugging.
 
 ### Fixed
 
