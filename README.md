@@ -46,34 +46,8 @@ libvips path into generic ImageMagick decoding.
 
 ## Install
 
-System dependency:
-
-- `libvips` headers and library, discoverable through `pkg-config vips`
-
-Optional command dependencies:
-
-- `magick` / `convert` and `identify` for ImageMagick compatibility operations
-- `jpegoptim` for JPEG optimisation
-- `oxipng` for PNG lossless optimisation
-- `pngquant` for optional lossy PNG optimisation
-- `cjpegli` for optional Jpegli JPEG encoding of generated JPEGs
-
-Ruby runtime dependency:
-
-- `rexml` for SVG sanitising
-
-Optional Ruby dependency:
-
-- `landlock` for Linux subprocess sandboxing
-
-`landlock` is intentionally **not** a gem dependency. Install it in the host
-application if you want sandboxing.
-
-`cjpegli` is also intentionally optional. On Arch it is provided by `libjxl`;
-on macOS it is commonly installed via `brew install jpeg-xl`; Debian/Ubuntu
-package names vary by release (`libjpegli-tools` where available). Safe Image
-detects it at runtime and falls back unless the caller explicitly requests
-`encoder: :cjpegli`.
+Install the [dependencies](#dependencies) below first — the native extension
+compiles against libvips at install time.
 
 ```bash
 gem build safe_image.gemspec
@@ -100,6 +74,87 @@ SafeImage.convert(
   quality: 85,
   max_pixels: 40_000_000
 )
+```
+
+## Dependencies
+
+### Quick install
+
+Debian / Ubuntu:
+
+```bash
+sudo apt-get install --no-install-recommends \
+  build-essential pkg-config libvips-dev \
+  imagemagick jpegoptim pngquant oxipng libjpeg-turbo-progs
+```
+
+`oxipng` is packaged from Debian 13 / Ubuntu 24.04; on older releases install
+it with `cargo install oxipng`. For `cjpegli`, Debian/Ubuntu package names
+vary by release (`libjpegli-tools` where available); it is optional and
+detected at runtime.
+
+Arch:
+
+```bash
+sudo pacman -S --needed base-devel pkgconf libvips \
+  imagemagick jpegoptim pngquant oxipng libjpeg-turbo libjxl
+```
+
+(`libjpeg-turbo` provides `jpegtran`, `libjxl` provides `cjpegli`.)
+
+### What each dependency is for
+
+| Dependency | Kind | Needed for | Without it |
+| --- | --- | --- | --- |
+| `libvips` (headers + library, via `pkg-config vips`) | **required** | compiling the native extension; every fast-path operation | gem does not install |
+| ImageMagick (`magick`/`convert`, `identify`) | required for compat ops | the `backend: :imagemagick` paths, which are still the default for `resize`/`crop`/`downsize`/`convert` | those operations raise unless called with `backend: :vips` |
+| `jpegoptim` | required for JPEG `optimize` | lossless JPEG optimisation and metadata stripping | JPEG `optimize` raises in strict mode |
+| `oxipng` | required for PNG `optimize` | lossless PNG optimisation | PNG `optimize` raises in strict mode |
+| `pngquant` | optional | lossy PNG quantisation (`optimize_mode: :lossy`, files < 500KB) | lossy mode silently skips the quantisation pass |
+| `jpegtran` (libjpeg-turbo) | optional | lossless tier of `fix_orientation` for MCU-aligned JPEGs | falls back to the libvips re-encode tier |
+| `cjpegli` (libjxl) | optional | higher-quality encoding of generated JPEGs (`encoder: :auto`) | falls back to libvips/ImageMagick JPEG encoders |
+| `landlock` gem (Linux kernel ≥ 5.13) | optional, opt-in | the atomic sandbox (`SafeImage.enable_sandbox!`) | `sandbox_available?` is false; inline execution only |
+| `rexml` gem | automatic | SVG sanitising and SVG metadata | installed as a gem dependency |
+
+The `landlock` gem is intentionally **not** a gem dependency; add it to the
+host application's Gemfile if you want sandboxing.
+
+### libvips build capabilities
+
+Some features depend on how the host's libvips was built (all present in
+stock Debian, Ubuntu and Arch packages):
+
+- **libheif** — HEIC/AVIF decode (`probe`, `convert`, thumbnails)
+- **Pango text** (`VipsText`) — native `letter_avatar`; without it the
+  operation falls back to ImageMagick
+- **cgif** (`gifsave`) — GIF *output* from the vips backend; GIF *decode*
+  (libnsgif) is always built in
+
+Check a host with:
+
+```bash
+vips -l | grep -cE "VipsForeignSaveCgif|VipsText|VipsForeignLoadHeif" # expect 3+
+```
+
+### Fonts
+
+Letter avatars need **no font packages** with the default `DejaVu-Sans`
+token: the gem bundles DejaVu Sans and pins it via fontconfig's app-font API.
+The other allowlisted tokens (`NimbusSans-Regular`, `Liberation-Sans`,
+`Arial`, `Helvetica`, `Adwaita-Sans`) resolve through system fontconfig —
+install e.g. `fonts-liberation` (Debian/Ubuntu) or `ttf-liberation` (Arch) if
+you select them. Glyphs outside DejaVu's coverage (CJK, Hangul, ...) fall
+back per-glyph to whatever system fonts exist.
+
+### Checking a host
+
+```ruby
+require "safe_image"
+
+%w[magick identify jpegoptim oxipng pngquant jpegtran cjpegli].each do |tool|
+  puts format("%-10s %s", tool, SafeImage::Runner.available?(tool) ? "ok" : "missing")
+end
+puts format("%-10s %s", "sandbox", SafeImage.sandbox_available? ? "ok" : "unavailable")
 ```
 
 ## Return values
@@ -253,8 +308,16 @@ root, and derives dimensions from numeric `width`/`height` or `viewBox`.
 
 ### `SafeImage.orientation(path, max_pixels: nil)`
 
-Returns the EXIF orientation integer for a local file, defaulting to `1` when no
-orientation is present or when ImageMagick cannot report it.
+Returns the EXIF orientation integer (1-8) for a local file from the
+orientation header field the native libvips loaders populate during the
+header scan — no pixel data is decoded, and garbage tag values clamp to `1`.
+SVG and ICO report `1` by definition; ImageMagick identify remains only as
+the fallback for formats outside the native loader allowlist.
+
+Note one deliberate HEIC difference: libheif applies the container's
+`irot`/`imir` transforms during decode, so the native path reports the
+orientation of the pixels as actually decoded, rather than echoing a raw
+EXIF tag that may already be baked in.
 
 ```ruby
 SafeImage.orientation("upload.jpg") # => 1
@@ -441,9 +504,21 @@ SafeImage.convert("upload.heic", "upload.jpg", format: "jpg", quality: 85)
 SafeImage.convert("upload.jpg", "upload.webp", format: "webp", quality: 85)
 ```
 
-### `SafeImage.fix_orientation(from, to = from, max_pixels: nil)`
+### `SafeImage.fix_orientation(from, to = from, max_pixels: nil, quality: nil, backend: :auto)`
 
-Applies EXIF orientation through ImageMagick. If `to` is omitted, the file is
+Bakes the EXIF orientation into the pixels and clears the tag. The `:auto`
+backend tries tiers in order:
+
+1. **jpegtran (lossless)** — for JPEGs with `jpegtran` installed, the
+   transform happens on the DCT coefficients with zero generation loss.
+   `-perfect` refuses non-MCU-aligned dimensions, in which case:
+2. **libvips re-encode** — autorotate and re-encode, stripping metadata.
+   JPEG output uses `quality:` (default 95; note the ImageMagick path
+   re-encodes at the input's estimated quality instead).
+3. **ImageMagick** is never used implicitly here; opt in with
+   `backend: :imagemagick` for the previous `-auto-orient` behaviour.
+
+If `to` is omitted, the file is
 rewritten in place.
 
 ```ruby

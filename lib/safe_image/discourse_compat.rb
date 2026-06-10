@@ -198,11 +198,100 @@ module SafeImage
       convert(from, to, format: "jpg", quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
     end
 
-    def fix_orientation(from, to = from, max_pixels: nil)
-      probe = compat_probe(from, backend: :imagemagick, max_pixels: max_pixels)
+    # EXIF orientation values mapped onto jpegtran's lossless transforms.
+    JPEGTRAN_OPERATIONS = {
+      2 => ["-flip", "horizontal"],
+      3 => ["-rotate", "180"],
+      4 => ["-flip", "vertical"],
+      5 => ["-transpose"],
+      6 => ["-rotate", "90"],
+      7 => ["-transverse"],
+      8 => ["-rotate", "270"]
+    }.freeze
+
+    def fix_orientation(from, to = from, max_pixels: nil, quality: nil, backend: :auto)
       output = PathSafety.ensure_safe_output_path!(to).to_s
+
+      case backend.to_sym
+      when :imagemagick, :magick
+        imagemagick_fix_orientation(from, output, max_pixels: max_pixels)
+      when :vips
+        native_fix_orientation(from, output, max_pixels: max_pixels, quality: quality)
+      when :auto
+        begin
+          native_fix_orientation(from, output, max_pixels: max_pixels, quality: quality)
+        rescue UnsupportedFormatError
+          imagemagick_fix_orientation(from, output, max_pixels: max_pixels)
+        end
+      else
+        raise ArgumentError, "unknown backend: #{backend.inspect}"
+      end
+    end
+
+    def imagemagick_fix_orientation(from, output, max_pixels:)
+      probe = compat_probe(from, backend: :imagemagick, max_pixels: max_pixels)
       info = ImageMagickBackend.fix_orientation(input: probe.input, output: output)
       result_from_info(probe.input, output, info, "imagemagick")
+    end
+
+    def native_fix_orientation(from, output, max_pixels:, quality:)
+      input = PathSafety.ensure_regular_file!(from).to_s
+      format = File.extname(input).delete_prefix(".").downcase
+      format = "jpg" if format == "jpeg"
+      # Validates the format against the native loader allowlist and enforces
+      # the pixel cap before any pixel decode.
+      orient = VipsBackend.orientation(input, max_pixels: max_pixels)
+
+      # Lossless tier: jpegtran transforms JPEG DCT coefficients directly, so
+      # there is no generation loss. -perfect refuses when the dimensions are
+      # not MCU-aligned; fall through to the re-encode tier.
+      if format == "jpg" && orient > 1 && Runner.available?("jpegtran")
+        begin
+          return jpegtran_fix_orientation(input, output, orient)
+        rescue CommandError
+          nil
+        end
+      end
+
+      quality = quality.nil? ? 95 : Integer(quality)
+      raise ArgumentError, "quality must be 1..100" unless (1..100).cover?(quality)
+      info = write_through_tempfile(output) do |tmp_path|
+        Native.resize(input, tmp_path, 1.0, format, quality, max_pixels)
+      end
+      result_from_info(input, output, info, "libvips-direct")
+    end
+
+    def jpegtran_fix_orientation(input, output, orient)
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      info = write_through_tempfile(output) do |tmp_path|
+        Runner.run!(["jpegtran", "-copy", "none", "-perfect", *JPEGTRAN_OPERATIONS.fetch(orient), "-outfile", tmp_path, input])
+        Native.probe(tmp_path)
+      end
+      result_from_info(
+        input,
+        output,
+        {
+          input_format: "jpg",
+          output_format: "jpg",
+          width: info.fetch(:width),
+          height: info.fetch(:height),
+          duration_ms: (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1000
+        },
+        "jpegtran"
+      )
+    end
+
+    # Writes via a sibling tempfile and renames into place, so in-place calls
+    # (to == from) never feed an output path that libvips is still reading
+    # from as input.
+    def write_through_tempfile(output)
+      tmp_path = File.join(File.dirname(output), ".safe-image-#{Process.pid}-#{output.object_id}#{File.extname(output)}")
+      PathSafety.ensure_safe_output_path!(tmp_path)
+      result = yield tmp_path
+      FileUtils.mv(tmp_path, output)
+      result
+    ensure
+      FileUtils.rm_f(tmp_path)
     end
 
     def convert_favicon_to_png(from, to, optimize: true, max_pixels: nil)

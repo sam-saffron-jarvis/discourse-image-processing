@@ -31,6 +31,11 @@ module SafeImage
       Native.pages(input, max_pixels)
     end
 
+    def orientation(input, max_pixels: nil)
+      input = PathSafety.ensure_regular_file!(input).to_s
+      Native.orientation(input, max_pixels)
+    end
+
     # Maps the public font tokens (shared with the ImageMagick backend) to
     # Pango family names. DejaVu Sans additionally pins the font file bundled
     # with the gem, so its rendering does not depend on host fonts.

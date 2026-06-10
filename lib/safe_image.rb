@@ -160,11 +160,19 @@ module SafeImage
 
   def orientation(path, max_pixels: nil)
     maybe_sandbox(:orientation, args: [path], kwargs: { max_pixels: max_pixels }) do
-      if File.extname(PathSafety.local_path(path)).downcase == ".svg"
+      case File.extname(PathSafety.local_path(path)).downcase
+      when ".svg", ".ico"
+        # No EXIF orientation in either format; upright by definition.
         1
       else
-        probe(path, max_pixels: max_pixels) if max_pixels
-        ImageMagickBackend.orientation(path)
+        # Header-only native read; ImageMagick identify remains the fallback
+        # for formats outside the native loader allowlist.
+        begin
+          VipsBackend.orientation(path, max_pixels: max_pixels)
+        rescue UnsupportedFormatError
+          probe(path, max_pixels: max_pixels) if max_pixels
+          ImageMagickBackend.orientation(path)
+        end
       end
     end
   end

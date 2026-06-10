@@ -398,6 +398,25 @@ static VALUE rb_crop_north(VALUE self, VALUE input_val, VALUE output_val, VALUE 
   return hash;
 }
 
+static VALUE rb_orientation(VALUE self, VALUE path_val, VALUE max_pixels_val) {
+  Check_Type(path_val, T_STRING);
+  const char *fmt = NULL;
+  VipsImage *image = load_explicit(StringValueCStr(path_val), &fmt);
+  long long pixels = 0, max_pixels = 0;
+  if (pixels_exceed_limit(image, max_pixels_val, &pixels, &max_pixels)) {
+    g_object_unref(image);
+    raise_pixels_limit(pixels, max_pixels);
+  }
+
+  /* Loaders set the orientation header from EXIF during the header scan, so
+   * no pixel data is decoded here. Clamp garbage tag values to the EXIF
+   * range; absent means upright. */
+  int orientation = vips_image_get_orientation(image);
+  g_object_unref(image);
+  if (orientation < 1 || orientation > 8) orientation = 1;
+  return INT2NUM(orientation);
+}
+
 /* Render a letter avatar: a Pango-rendered glyph blended in white at 80%
  * opacity over a solid background. The blend bg*(1-0.8*m/255) + 255*(0.8*m/255)
  * rearranges to a*mask + b per channel, so the whole composite is one
@@ -663,4 +682,5 @@ void Init_safe_image_native(void) {
   rb_define_singleton_method(mNative, "pages", rb_pages, 2);
   rb_define_singleton_method(mNative, "png_from_rgba", rb_png_from_rgba, 4);
   rb_define_singleton_method(mNative, "letter_avatar", rb_letter_avatar, 8);
+  rb_define_singleton_method(mNative, "orientation", rb_orientation, 2);
 }
