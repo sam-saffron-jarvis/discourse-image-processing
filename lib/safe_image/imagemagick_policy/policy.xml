@@ -6,7 +6,7 @@
   <policy domain="path" rights="none" pattern="@*" />
 
   <policy domain="coder" rights="none" pattern="*" />
-  <policy domain="coder" rights="read|write" pattern="{JPEG,JPG,PNG,GIF,WEBP,HEIC,HEIF,AVIF,ICO,ICC,ICM,XC}" />
+  <policy domain="coder" rights="read|write" pattern="{JPEG,JPG,PNG,GIF,WEBP,HEIC,HEIF,AVIF,ICO,ICC,ICM,XC,JXL}" />
 
   <!-- Output-only coders for dominant_color, which writes the histogram
        colour summary to stdout via histogram-to-info output. Write rights

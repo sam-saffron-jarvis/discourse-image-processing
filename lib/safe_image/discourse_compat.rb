@@ -10,22 +10,39 @@ module SafeImage
   module DiscourseCompat
     module_function
 
-    def resize(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)
-      if backend.to_sym == :vips
-        return SafeImage.thumbnail(
-          input: from,
-          output: to,
-          width: width,
-          height: height,
-          quality: quality || 85,
-          backend: backend,
-          optimize: optimize,
-          max_pixels: max_pixels,
-          encoder: encoder,
-          chroma_subsampling: chroma_subsampling
-        )
+    def resize(from, to, width, height, quality: nil, backend: :auto, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)
+      case backend.to_sym
+      when :vips
+        vips_resize(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+      when :imagemagick, :magick
+        imagemagick_resize(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels)
+      when :auto
+        begin
+          vips_resize(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+        rescue UnsupportedFormatError
+          imagemagick_resize(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels)
+        end
+      else
+        raise ArgumentError, "unknown backend: #{backend.inspect}"
       end
+    end
 
+    def vips_resize(from, to, width, height, quality:, optimize:, max_pixels:, encoder:, chroma_subsampling:)
+      SafeImage.thumbnail(
+        input: from,
+        output: to,
+        width: width,
+        height: height,
+        quality: quality || 85,
+        backend: :vips,
+        optimize: optimize,
+        max_pixels: max_pixels,
+        encoder: encoder,
+        chroma_subsampling: chroma_subsampling
+      )
+    end
+
+    def imagemagick_resize(from, to, width, height, quality:, optimize:, max_pixels:)
       probe = compat_probe(from, backend: :imagemagick, max_pixels: max_pixels)
       output = PathSafety.ensure_safe_output_path!(to).to_s
       info = ImageMagickBackend.thumbnail(
@@ -36,17 +53,34 @@ module SafeImage
         format: File.extname(output).delete_prefix(".").downcase,
         quality: quality
       )
-      Optimizer.optimize(output, mode: :lossless, strip_metadata: true, quality: quality) if optimize
+      optimize_output(output, quality) if optimize
       result_from_info(probe.input, output, info, "imagemagick")
     end
 
-    def crop(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)
-      probe = compat_probe(from, backend: backend, max_pixels: max_pixels)
+    def crop(from, to, width, height, quality: nil, backend: :auto, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)
+      case backend.to_sym
+      when :vips
+        vips_crop(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+      when :imagemagick, :magick
+        imagemagick_crop(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels)
+      when :auto
+        begin
+          vips_crop(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+        rescue UnsupportedFormatError
+          imagemagick_crop(from, to, width, height, quality: quality, optimize: optimize, max_pixels: max_pixels)
+        end
+      else
+        raise ArgumentError, "unknown backend: #{backend.inspect}"
+      end
+    end
+
+    def vips_crop(from, to, width, height, quality:, optimize:, max_pixels:, encoder:, chroma_subsampling:)
+      probe = compat_probe(from, backend: :vips, max_pixels: max_pixels)
       output = PathSafety.ensure_safe_output_path!(to).to_s
       format = File.extname(output).delete_prefix(".").downcase
 
       info =
-        if backend.to_sym == :vips && use_jpegli_for_generated_jpeg?(format, backend, encoder)
+        if use_jpegli_for_generated_jpeg?(format, :vips, encoder)
           with_temp_png(output) do |tmp_path|
             VipsBackend.crop_north(
               input: probe.input,
@@ -65,7 +99,7 @@ module SafeImage
               input_format: probe.input_format
             )
           end
-        elsif backend.to_sym == :vips
+        else
           VipsBackend.crop_north(
             input: probe.input,
             output: output,
@@ -75,27 +109,50 @@ module SafeImage
             quality: quality || 85,
             max_pixels: max_pixels
           )
-        else
-          ImageMagickBackend.resize_like(
-            input: probe.input,
-            output: output,
-            width: width,
-            height: height,
-            format: format,
-            quality: quality,
-            crop: :north
-          )
         end
-      Optimizer.optimize(output, mode: :lossless, strip_metadata: true, quality: quality) if optimize
-      result_from_info(probe.input, output, info, compat_backend_name(backend, info))
+      optimize_output(output, quality) if optimize
+      result_from_info(probe.input, output, info, compat_backend_name(:vips, info))
     end
 
-    def downsize(from, to, dimensions, backend: :imagemagick, optimize: true, max_pixels: nil, quality: 85, encoder: :auto, chroma_subsampling: :auto)
-      probe = compat_probe(from, backend: backend, max_pixels: max_pixels)
+    def imagemagick_crop(from, to, width, height, quality:, optimize:, max_pixels:)
+      probe = compat_probe(from, backend: :imagemagick, max_pixels: max_pixels)
+      output = PathSafety.ensure_safe_output_path!(to).to_s
+      info = ImageMagickBackend.resize_like(
+        input: probe.input,
+        output: output,
+        width: width,
+        height: height,
+        format: File.extname(output).delete_prefix(".").downcase,
+        quality: quality,
+        crop: :north
+      )
+      optimize_output(output, quality) if optimize
+      result_from_info(probe.input, output, info, "imagemagick")
+    end
+
+    def downsize(from, to, dimensions, backend: :auto, optimize: true, max_pixels: nil, quality: 85, encoder: :auto, chroma_subsampling: :auto)
+      case backend.to_sym
+      when :vips
+        vips_downsize(from, to, dimensions, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+      when :imagemagick, :magick
+        imagemagick_downsize(from, to, dimensions, optimize: optimize, max_pixels: max_pixels)
+      when :auto
+        begin
+          vips_downsize(from, to, dimensions, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+        rescue UnsupportedFormatError
+          imagemagick_downsize(from, to, dimensions, optimize: optimize, max_pixels: max_pixels)
+        end
+      else
+        raise ArgumentError, "unknown backend: #{backend.inspect}"
+      end
+    end
+
+    def vips_downsize(from, to, dimensions, quality:, optimize:, max_pixels:, encoder:, chroma_subsampling:)
+      probe = compat_probe(from, backend: :vips, max_pixels: max_pixels)
       output = PathSafety.ensure_safe_output_path!(to).to_s
       format = File.extname(output).delete_prefix(".").downcase
       info =
-        if backend.to_sym == :vips && use_jpegli_for_generated_jpeg?(format, backend, encoder)
+        if use_jpegli_for_generated_jpeg?(format, :vips, encoder)
           with_temp_png(output) do |tmp_path|
             VipsBackend.downsize(
               input: probe.input,
@@ -113,7 +170,7 @@ module SafeImage
               input_format: probe.input_format
             )
           end
-        elsif backend.to_sym == :vips
+        else
           VipsBackend.downsize(
             input: probe.input,
             output: output,
@@ -122,46 +179,103 @@ module SafeImage
             quality: quality,
             max_pixels: max_pixels
           )
-        else
-          ImageMagickBackend.downsize(
-            input: probe.input,
-            output: output,
-            dimensions: dimensions,
-            format: format
-          )
         end
-      Optimizer.optimize(output, mode: :lossless, strip_metadata: true) if optimize
-      result_from_info(probe.input, output, info, compat_backend_name(backend, info))
+      optimize_output(output, nil) if optimize
+      result_from_info(probe.input, output, info, compat_backend_name(:vips, info))
     end
 
-    def convert(from, to, format:, quality: nil, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)
+    def imagemagick_downsize(from, to, dimensions, optimize:, max_pixels:)
       probe = compat_probe(from, backend: :imagemagick, max_pixels: max_pixels)
       output = PathSafety.ensure_safe_output_path!(to).to_s
+      info = ImageMagickBackend.downsize(
+        input: probe.input,
+        output: output,
+        dimensions: dimensions,
+        format: File.extname(output).delete_prefix(".").downcase
+      )
+      optimize_output(output, nil) if optimize
+      result_from_info(probe.input, output, info, "imagemagick")
+    end
+
+    # Post-processing applies only to the formats the optimizer tools
+    # understand; other outputs (gif, jxl, ...) skip the pass.
+    def optimize_output(output, quality)
+      format = File.extname(output).delete_prefix(".").downcase
+      format = "jpg" if format == "jpeg"
+      return unless Processor::OPTIMIZABLE_OUTPUTS.include?(format)
+      Optimizer.optimize(output, mode: :lossless, strip_metadata: true, quality: quality)
+    end
+
+    # JPEG default when the caller passes no quality: matches what ImageMagick
+    # uses for sources without quality tables, rather than libvips' Q75.
+    NATIVE_CONVERT_DEFAULT_QUALITY = 92
+
+    def convert(from, to, format:, quality: nil, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto, backend: :auto)
+      output = PathSafety.ensure_safe_output_path!(to).to_s
+      backend = backend.to_sym
+      encoder = encoder.to_sym
+      # encoder: :imagemagick predates the backend kwarg and means "run the
+      # whole conversion through ImageMagick".
+      backend = :imagemagick if encoder == :imagemagick && backend == :auto
+
+      case backend
+      when :imagemagick, :magick
+        unless %i[auto imagemagick].include?(encoder)
+          raise ArgumentError, "encoder: #{encoder.inspect} conflicts with backend: :imagemagick"
+        end
+        imagemagick_convert(from, output, format: format, quality: quality, optimize: optimize, max_pixels: max_pixels)
+      when :vips
+        native_convert(from, output, format: format, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+      when :auto
+        begin
+          native_convert(from, output, format: format, quality: quality, optimize: optimize, max_pixels: max_pixels, encoder: encoder, chroma_subsampling: chroma_subsampling)
+        rescue UnsupportedFormatError
+          # Format routing only (ico input, ico output, ...); cjpegli-specific
+          # failures must not silently change encoders.
+          raise if encoder == :cjpegli
+          imagemagick_convert(from, output, format: format, quality: quality, optimize: optimize, max_pixels: max_pixels)
+        end
+      else
+        raise ArgumentError, "unknown backend: #{backend.inspect}"
+      end
+    end
+
+    def imagemagick_convert(from, output, format:, quality:, optimize:, max_pixels:)
+      probe = compat_probe(from, backend: :imagemagick, max_pixels: max_pixels)
+      normalized_format = format.to_s.downcase == "jpeg" ? "jpg" : format.to_s.downcase
+      info = ImageMagickBackend.convert(input: probe.input, output: output, format: format, quality: quality)
+      optimize_output(output, normalized_format == "jpg" ? quality : nil) if optimize
+      result_from_info(probe.input, output, info, "imagemagick")
+    end
+
+    def native_convert(from, output, format:, quality:, optimize:, max_pixels:, encoder:, chroma_subsampling:)
+      input = PathSafety.ensure_regular_file!(from).to_s
       normalized_format = format.to_s.downcase == "jpeg" ? "jpg" : format.to_s.downcase
 
-      info =
-        if use_jpegli_for_convert?(probe.input, normalized_format, encoder)
-          JpegliBackend.convert(
-            input: probe.input,
-            output: output,
-            quality: quality || JpegliBackend::DEFAULT_QUALITY,
-            chroma_subsampling: chroma_subsampling
-          )
-        else
-          if encoder.to_sym == :cjpegli
-            raise UnsupportedFormatError, "cjpegli cannot directly encode #{File.extname(probe.input).delete_prefix(".").downcase.inspect}; use encoder: :auto or another encoder"
-          end
-          ImageMagickBackend.convert(input: probe.input, output: output, format: format, quality: quality)
-        end
+      if use_jpegli_for_convert?(input, normalized_format, encoder)
+        info = JpegliBackend.convert(
+          input: input,
+          output: output,
+          quality: quality || JpegliBackend::DEFAULT_QUALITY,
+          chroma_subsampling: chroma_subsampling
+        )
+        return result_from_info(input, output, info, "cjpegli")
+      end
+      if encoder == :cjpegli
+        raise UnsupportedFormatError, "cjpegli cannot directly encode #{File.extname(input).delete_prefix(".").downcase.inspect}; use encoder: :auto or another encoder"
+      end
 
-      Optimizer.optimize(output, mode: :lossless, strip_metadata: true, quality: normalized_format == "jpg" ? quality : nil) if optimize && info[:encoder] != "cjpegli"
-      result_from_info(probe.input, output, info, info[:encoder] == "cjpegli" ? "cjpegli" : "imagemagick")
+      info = write_through_tempfile(output) do |tmp_path|
+        Native.convert(input, tmp_path, normalized_format, quality || NATIVE_CONVERT_DEFAULT_QUALITY, max_pixels)
+      end
+      optimize_output(output, normalized_format == "jpg" ? quality : nil) if optimize
+      result_from_info(input, output, info, "libvips-direct")
     end
 
     def use_jpegli_for_convert?(input, normalized_format, encoder)
       encoder = encoder.to_sym
       return false unless normalized_format == "jpg"
-      return false if encoder == :imagemagick
+      return false if %i[imagemagick vips].include?(encoder)
       raise ArgumentError, "unknown encoder: #{encoder.inspect}" unless %i[auto cjpegli].include?(encoder)
       return true if encoder == :cjpegli && JpegliBackend.suitable_direct_input?(input)
       encoder == :auto && JpegliBackend.available? && JpegliBackend.suitable_direct_input?(input)

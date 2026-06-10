@@ -44,6 +44,7 @@ static const char *normalized_format(const char *fmt) {
   if (streq_ci(fmt, "gif")) return "gif";
   if (streq_ci(fmt, "heic") || streq_ci(fmt, "heif")) return "heic";
   if (streq_ci(fmt, "avif")) return "avif";
+  if (streq_ci(fmt, "jxl")) return "jxl";
   return NULL;
 }
 
@@ -67,6 +68,14 @@ static void init_vips_once(void) {
   vips_operation_block_set("VipsForeignLoadMagick", TRUE);
   vips_operation_block_set("VipsForeignLoadMagick6", TRUE);
   vips_operation_block_set("VipsForeignLoadMagick7", TRUE);
+
+  /* libvips tags the libjxl loader and saver as untrusted by default. JPEG
+   * XL is part of this gem's supported input surface (Discourse accepts
+   * .jxl uploads), so re-enable both deliberately: inputs still go through
+   * explicit extension routing, the pixel cap, and optionally the Landlock
+   * sandbox. */
+  vips_operation_block_set("VipsForeignLoadJxl", FALSE);
+  vips_operation_block_set("VipsForeignSaveJxl", FALSE);
 
   /* Keep the embedded path predictable and bounded. Callers that want harder
    * isolation should run this gem inside a sandboxed worker process. */
@@ -112,6 +121,14 @@ static VipsImage *load_explicit(const char *path, const char **fmt_out) {
       NULL);
   } else if (strcmp(fmt, "heic") == 0 || strcmp(fmt, "avif") == 0) {
     rc = vips_heifload(path, &image,
+      "access", VIPS_ACCESS_SEQUENTIAL,
+      "fail_on", VIPS_FAIL_ON_ERROR,
+      NULL);
+  } else if (strcmp(fmt, "jxl") == 0) {
+    /* Optional at libvips build time. */
+    if (!vips_type_find("VipsOperation", "jxlload"))
+      rb_raise(eUnsupported, "this libvips build has no JPEG XL loader");
+    rc = vips_jxlload(path, &image,
       "access", VIPS_ACCESS_SEQUENTIAL,
       "fail_on", VIPS_FAIL_ON_ERROR,
       NULL);
@@ -182,6 +199,14 @@ static int save_explicit(VipsImage *image, const char *path, const char *fmt, in
     if (!vips_type_find("VipsOperation", "gifsave"))
       rb_raise(eUnsupported, "this libvips build cannot save GIF (cgif support missing)");
     return vips_gifsave(image, path,
+      "keep", VIPS_FOREIGN_KEEP_NONE,
+      NULL);
+  } else if (strcmp(fmt, "jxl") == 0) {
+    /* Optional at libvips build time. */
+    if (!vips_type_find("VipsOperation", "jxlsave"))
+      rb_raise(eUnsupported, "this libvips build cannot save JPEG XL");
+    return vips_jxlsave(image, path,
+      "Q", quality,
       "keep", VIPS_FOREIGN_KEEP_NONE,
       NULL);
   }
@@ -386,6 +411,73 @@ static VALUE rb_crop_north(VALUE self, VALUE input_val, VALUE output_val, VALUE 
   double duration_ms = now_ms() - start;
   g_object_unref(crop);
   g_object_unref(resized);
+  g_object_unref(rot);
+  g_object_unref(in);
+
+  VALUE hash = rb_hash_new();
+  rb_hash_aset(hash, ID2SYM(rb_intern("input_format")), rb_str_new_cstr(input_fmt));
+  rb_hash_aset(hash, ID2SYM(rb_intern("output_format")), rb_str_new_cstr(out_fmt));
+  rb_hash_aset(hash, ID2SYM(rb_intern("width")), INT2NUM(out_width));
+  rb_hash_aset(hash, ID2SYM(rb_intern("height")), INT2NUM(out_height));
+  rb_hash_aset(hash, ID2SYM(rb_intern("duration_ms")), DBL2NUM(duration_ms));
+  return hash;
+}
+
+/* Format conversion: decode through the allowlisted loaders, apply EXIF
+ * auto-orientation, flatten transparency onto white for JPEG targets (JPEG
+ * has no alpha; ImageMagick's convert path flattens to white, and without
+ * an explicit flatten libvips composites onto black), then re-encode. */
+static VALUE rb_convert(VALUE self, VALUE input_val, VALUE output_val, VALUE format_val, VALUE quality_val, VALUE max_pixels_val) {
+  Check_Type(input_val, T_STRING);
+  Check_Type(output_val, T_STRING);
+  Check_Type(format_val, T_STRING);
+  int quality = NUM2INT(quality_val);
+  validate_quality_or_raise(quality);
+  const char *out_fmt = normalized_format(StringValueCStr(format_val));
+  if (!out_fmt || strcmp(out_fmt, "heic") == 0) rb_raise(eUnsupported, "unsupported output format");
+
+  double start = now_ms();
+  const char *input_fmt = NULL;
+  VipsImage *in = load_explicit(StringValueCStr(input_val), &input_fmt);
+  long long pixels = 0, max_pixels = 0;
+  if (pixels_exceed_limit(in, max_pixels_val, &pixels, &max_pixels)) {
+    g_object_unref(in);
+    raise_pixels_limit(pixels, max_pixels);
+  }
+
+  VipsImage *rot = NULL;
+  if (vips_autorot(in, &rot, NULL) != 0) {
+    g_object_unref(in);
+    raise_vips();
+  }
+
+  VipsImage *flat = NULL;
+  if (strcmp(out_fmt, "jpg") == 0 && vips_image_hasalpha(rot)) {
+    double white[3] = { 255.0, 255.0, 255.0 };
+    VipsArrayDouble *background = vips_array_double_new(white, 3);
+    int rc = vips_flatten(rot, &flat, "background", background, NULL);
+    vips_area_unref(VIPS_AREA(background));
+    if (rc != 0) {
+      g_object_unref(rot);
+      g_object_unref(in);
+      raise_vips();
+    }
+  } else {
+    flat = rot;
+    g_object_ref(flat);
+  }
+
+  if (save_explicit(flat, StringValueCStr(output_val), out_fmt, quality) != 0) {
+    g_object_unref(flat);
+    g_object_unref(rot);
+    g_object_unref(in);
+    raise_vips();
+  }
+
+  int out_width = flat->Xsize;
+  int out_height = flat->Ysize;
+  double duration_ms = now_ms() - start;
+  g_object_unref(flat);
   g_object_unref(rot);
   g_object_unref(in);
 
@@ -683,4 +775,5 @@ void Init_safe_image_native(void) {
   rb_define_singleton_method(mNative, "png_from_rgba", rb_png_from_rgba, 4);
   rb_define_singleton_method(mNative, "letter_avatar", rb_letter_avatar, 8);
   rb_define_singleton_method(mNative, "orientation", rb_orientation, 2);
+  rb_define_singleton_method(mNative, "convert", rb_convert, 5);
 }

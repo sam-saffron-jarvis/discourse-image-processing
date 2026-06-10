@@ -6,8 +6,11 @@ require "tempfile"
 
 module SafeImage
   class Processor
-    SUPPORTED_INPUTS = %w[jpg jpeg png gif webp heic heif avif].freeze
-    SUPPORTED_OUTPUTS = %w[jpg jpeg png gif webp avif].freeze
+    SUPPORTED_INPUTS = %w[jpg jpeg png gif webp heic heif avif jxl].freeze
+    SUPPORTED_OUTPUTS = %w[jpg jpeg png gif webp avif jxl].freeze
+    # Formats the post-processing optimizer tools understand; other outputs
+    # skip the optimize pass instead of erroring.
+    OPTIMIZABLE_OUTPUTS = %w[jpg png].freeze
 
     def initialize(max_pixels: nil, backend: :vips, execution: :inline, encoder: :auto, chroma_subsampling: :auto)
       @max_pixels = max_pixels
@@ -108,7 +111,7 @@ module SafeImage
         end
 
       opt_info = nil
-      if optimize
+      if optimize && OPTIMIZABLE_OUTPUTS.include?(out_format)
         opt_info = Optimizer.optimize(output, mode: optimize_mode, strip_metadata: true, quality: out_format == "jpg" ? quality : nil)
       end
 

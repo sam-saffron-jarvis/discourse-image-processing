@@ -24,6 +24,7 @@ module SafeImage
     ICO = File.join(FIXTURES, "smallest.ico")              # 1x1 ICO
     GIF = File.join(FIXTURES, "animated.gif")              # animated GIF
     WEBP = File.join(FIXTURES, "animated.webp")            # animated WebP
+    JXL = File.join(FIXTURES, "photo.jxl")                 # 400x260 JPEG XL
 
     # Pixel caps generous enough for the fixtures above. The cap behaviour
     # itself is exercised in PixelLimitTest.
@@ -83,6 +84,14 @@ module SafeImage
     rescue SafeImage::UnsupportedFormatError => e
       raise unless e.message.include?("cannot save GIF")
       skip "GIF output is not supported by this libvips build: #{e.message}"
+    end
+
+    # JPEG XL support is optional at libvips build time.
+    def jxl_or_skip
+      yield
+    rescue SafeImage::UnsupportedFormatError => e
+      raise unless e.message.include?("JPEG XL")
+      skip "JPEG XL is not supported by this libvips build: #{e.message}"
     end
   end
 end

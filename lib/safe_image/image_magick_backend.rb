@@ -14,7 +14,8 @@ module SafeImage
       "heic" => "heic",
       "heif" => "heic",
       "avif" => "heic",
-      "ico" => "ico"
+      "ico" => "ico",
+      "jxl" => "jxl"
     }.freeze
 
     IMAGEMAGICK_LIMIT_ARGS = [
@@ -248,7 +249,8 @@ module SafeImage
         "gif" => "gif",
         "webp" => "webp",
         "avif" => "avif",
-        "ico" => "ico"
+        "ico" => "ico",
+        "jxl" => "jxl"
       }.fetch(normalized) { raise UnsupportedFormatError, "unsupported ImageMagick output format: #{normalized.inspect}" }
       "#{coder}:#{output}"
     end

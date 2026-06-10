@@ -29,6 +29,14 @@ module SafeImage
       assert_equal "libvips-direct", SafeImage.probe(GIF, max_pixels: PNG_PIXELS).backend
     end
 
+    def test_jxl_metadata_uses_the_native_loader
+      jxl_or_skip do
+        assert_equal :jxl, SafeImage.type(JXL)
+        assert_equal [400, 260], SafeImage.size(JXL)
+        assert_equal "libvips-direct", SafeImage.probe(JXL).backend
+      end
+    end
+
     def test_frame_count
       assert_equal 20, SafeImage.frame_count(GIF, max_pixels: PNG_PIXELS)
       assert_equal 67, SafeImage.frame_count(WEBP, max_pixels: PNG_PIXELS)

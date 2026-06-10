@@ -39,10 +39,11 @@ module SafeImage
       "image/avif" => ".avif",
       "image/x-icon" => ".ico",
       "image/vnd.microsoft.icon" => ".ico",
+      "image/jxl" => ".jxl",
       "image/svg+xml" => ".svg"
     }.freeze
 
-    EXTENSIONS = %w[.jpg .jpeg .png .gif .webp .heic .heif .avif .ico .svg].freeze
+    EXTENSIONS = %w[.jpg .jpeg .png .gif .webp .heic .heif .avif .ico .jxl .svg].freeze
 
     BLOCKED_IP_RANGES = [
       # IPv4 special-use / non-public ranges. Default remote fetching is for

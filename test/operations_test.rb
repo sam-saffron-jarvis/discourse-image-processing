@@ -56,6 +56,38 @@ module SafeImage
       end
     end
 
+    def test_resize_crop_and_downsize_default_to_the_native_backend
+      resize = SafeImage.resize(JPG, tmp_path("r.jpg"), 600, 400, max_pixels: JPG_PIXELS)
+      crop = SafeImage.crop(JPG, tmp_path("c.jpg"), 400, 400, max_pixels: JPG_PIXELS)
+      downsize = SafeImage.downsize(PNG, tmp_path("d.png"), "50%", max_pixels: PNG_PIXELS)
+
+      assert_match(/\Alibvips-direct/, resize.backend)
+      assert_match(/\Alibvips-direct/, crop.backend)
+      assert_equal "libvips-direct", downsize.backend
+      assert_result resize, width: 600, height: 400
+      assert_result downsize, width: 1016, height: 656
+    end
+
+    def test_resize_of_ico_falls_back_to_imagemagick
+      result = SafeImage.resize(ICO, tmp_path("ico.png"), 16, 16)
+
+      assert_equal "imagemagick", result.backend
+    end
+
+    def test_gif_resize_skips_the_optimizer_instead_of_erroring
+      gif_save_or_skip do
+        result = SafeImage.resize(GIF, tmp_path("small.gif"), 64, 64, max_pixels: PNG_PIXELS)
+        assert_result result, width: 64, height: 64, format: "gif"
+      end
+    end
+
+    def test_thumbnail_to_jxl_output
+      jxl_or_skip do
+        result = SafeImage.thumbnail(input: JXL, output: tmp_path("thumb.jxl"), width: 100, height: 65, max_pixels: PNG_PIXELS)
+        assert_result result, width: 100, height: 65, format: "jxl"
+      end
+    end
+
     def test_crop_with_imagemagick_backend
       result = SafeImage.crop(JPG, tmp_path("crop.jpg"), 400, 400, backend: :imagemagick, max_pixels: JPG_PIXELS)
       assert_result result, width: 400, height: 400, format: "jpg"

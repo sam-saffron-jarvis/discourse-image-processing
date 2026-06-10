@@ -18,7 +18,7 @@ module SafeImage
       )
 
       actual = tmp_path("actual.jpg")
-      SafeImage.resize(JPG, actual, 600, 400, optimize: false)
+      SafeImage.resize(JPG, actual, 600, 400, backend: :imagemagick, optimize: false)
 
       assert_pixel_identical expected, actual
     end
@@ -32,7 +32,7 @@ module SafeImage
       )
 
       actual = tmp_path("actual.jpg")
-      SafeImage.crop(JPG, actual, 400, 400, optimize: false)
+      SafeImage.crop(JPG, actual, 400, 400, backend: :imagemagick, optimize: false)
 
       assert_pixel_identical expected, actual
     end

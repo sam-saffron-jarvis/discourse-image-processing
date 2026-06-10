@@ -24,7 +24,9 @@ What it does:
 - starts external commands with an allowlisted environment, private temp/home/cache
   directories, bounded stdout/stderr, and process-group timeout cleanup
 - uses explicit libvips loaders selected from allowlisted extensions
-- enables libvips' untrusted-operation block in-process
+- enables libvips' untrusted-operation block in-process (deliberately
+  re-enabling only the libjxl loader/saver, which libvips tags untrusted,
+  because JPEG XL is part of the supported input surface)
 - blocks libvips ImageMagick loader classes in the native extension
 - disables libvips cache by default in-process
 - strips metadata on generated images where applicable
@@ -107,7 +109,7 @@ sudo pacman -S --needed base-devel pkgconf libvips \
 | Dependency | Kind | Needed for | Without it |
 | --- | --- | --- | --- |
 | `libvips` (headers + library, via `pkg-config vips`) | **required** | compiling the native extension; every fast-path operation | gem does not install |
-| ImageMagick (`magick`/`convert`, `identify`) | required for compat ops | the `backend: :imagemagick` paths, which are still the default for `resize`/`crop`/`downsize`/`convert` | those operations raise unless called with `backend: :vips` |
+| ImageMagick (`magick`/`convert`, `identify`) | optional | the explicit `backend: :imagemagick` opt-in paths, and ICO-input routing for the transform operations | ICO transforms and explicit `:imagemagick` calls raise; everything else runs natively |
 | `jpegoptim` | required for JPEG `optimize` | lossless JPEG optimisation and metadata stripping | JPEG `optimize` raises in strict mode |
 | `oxipng` | required for PNG `optimize` | lossless PNG optimisation | PNG `optimize` raises in strict mode |
 | `pngquant` | optional | lossy PNG quantisation (`optimize_mode: :lossy`, files < 500KB) | lossy mode silently skips the quantisation pass |
@@ -129,11 +131,12 @@ stock Debian, Ubuntu and Arch packages):
   operation falls back to ImageMagick
 - **cgif** (`gifsave`) — GIF *output* from the vips backend; GIF *decode*
   (libnsgif) is always built in
+- **libjxl** (`jxlload`/`jxlsave`) — JPEG XL decode and encode
 
 Check a host with:
 
 ```bash
-vips -l | grep -cE "VipsForeignSaveCgif|VipsText|VipsForeignLoadHeif" # expect 3+
+vips -l | grep -cE "VipsForeignSaveCgif|VipsText|VipsForeignLoadHeif|VipsForeignLoadJxl" # expect 4+
 ```
 
 ### Fonts
@@ -203,6 +206,7 @@ Supported inputs:
 - `webp`
 - `heic` / `heif`
 - `avif`
+- `jxl` (requires a libvips build with libjxl support)
 - `ico` (pure-Ruby directory parse; reports the largest entry's dimensions)
 
 ```ruby
@@ -241,6 +245,7 @@ Supported outputs for the direct libvips backend:
 - `gif` (requires a libvips build with cgif support; raises `UnsupportedFormatError` otherwise)
 - `webp`
 - `avif`
+- `jxl` (requires a libvips build with libjxl support)
 
 `execution: :sandbox` is fail-closed: it raises if Landlock is unavailable.
 `execution: :sandbox_if_available` uses the sandbox only when available.
@@ -254,7 +259,7 @@ JPEGs**. This avoids hiding a lossy re-encode behind a method named `optimize`.
 | --- | --- |
 | `thumbnail` / `resize` / `crop` / `downsize` to JPEG with `backend: :vips` | use `cjpegli` when installed; otherwise use normal libvips JPEG output |
 | `convert("input.png", "output.jpg", format: "jpg")` | use `cjpegli` when installed; otherwise use ImageMagick compatibility path |
-| `convert` from HEIC/WebP/AVIF/GIF/JPEG to JPEG | fall back to ImageMagick compatibility path; `cjpegli` is not treated as a universal decoder |
+| `convert` from HEIC/WebP/AVIF/GIF/JPEG to JPEG | decode through the native libvips loaders and encode with libvips; `cjpegli` is not treated as a universal decoder |
 | `optimize("existing.jpg")` | use `jpegoptim`; never use `cjpegli` by default |
 
 Encoder controls:
@@ -449,53 +454,66 @@ These methods are shaped around the image operations Discourse currently
 performs. They are useful outside Discourse too, but the names are deliberately
 boring because they map to common upload-pipeline tasks.
 
-### `SafeImage.resize(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
+### `SafeImage.resize(from, to, width, height, quality: nil, backend: :auto, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
 
 Creates a resized thumbnail-style output.
 
 ```ruby
 SafeImage.resize("upload.jpg", "thumb.jpg", 600, 400)
-SafeImage.resize("upload.jpg", "thumb.jpg", 600, 400, backend: :vips, quality: 85)
+SafeImage.resize("upload.jpg", "thumb.jpg", 600, 400, backend: :imagemagick, quality: 85)
 ```
 
-Backends:
+Backends (shared by `resize`, `crop` and `downsize`):
 
-- `:imagemagick` default compatibility path
-- `:vips` direct libvips path
+- `:auto` (default) — direct libvips path; only formats outside the native
+  loader allowlist (ICO) fall back to the ImageMagick compatibility path
+- `:vips` — direct libvips path, fail-closed
+- `:imagemagick` — the compatibility path matching Discourse's historical
+  `convert` pipelines (`-thumbnail`, catrom interpolation, unsharp, sRGB
+  profile); pin this if byte-similar output with existing thumbnails matters
 
-### `SafeImage.crop(from, to, width, height, quality: nil, backend: :imagemagick, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
+### `SafeImage.crop(from, to, width, height, quality: nil, backend: :auto, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
 
 Creates a north-cropped image. This matches the avatar/optimized-image crop
 shape used by Discourse.
 
 ```ruby
 SafeImage.crop("upload.jpg", "avatar.jpg", 240, 240)
-SafeImage.crop("upload.jpg", "avatar.jpg", 240, 240, backend: :vips)
+SafeImage.crop("upload.jpg", "avatar.jpg", 240, 240, backend: :imagemagick)
 ```
 
-### `SafeImage.downsize(from, to, dimensions, backend: :imagemagick, optimize: true, max_pixels: nil, quality: 85, encoder: :auto, chroma_subsampling: :auto)`
+### `SafeImage.downsize(from, to, dimensions, backend: :auto, optimize: true, max_pixels: nil, quality: 85, encoder: :auto, chroma_subsampling: :auto)`
 
 Downsizes an image using ImageMagick-style geometry strings.
 
 ```ruby
 SafeImage.downsize("large.png", "small.png", "50%")
-SafeImage.downsize("large.png", "small.png", "100x100>", backend: :vips)
-SafeImage.downsize("large.png", "small.png", "400000@", backend: :vips)
+SafeImage.downsize("large.png", "small.png", "100x100>")
+SafeImage.downsize("large.png", "small.png", "400000@", backend: :imagemagick)
 ```
 
 The direct vips backend supports the geometry forms covered by the test suite:
 percentage, bounding box with `>`, and pixel-area cap with `@`.
 
-### `SafeImage.convert(from, to, format:, quality: nil, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto)`
+### `SafeImage.convert(from, to, format:, quality: nil, optimize: true, max_pixels: nil, encoder: :auto, chroma_subsampling: :auto, backend: :auto)`
 
 Converts an input image to an explicit output `format:`. Unsupported formats
 raise `SafeImage::UnsupportedFormatError`.
 
+The default `backend: :auto` decodes through the native libvips loaders,
+auto-orients, flattens transparency onto white for JPEG targets (matching the
+ImageMagick path's `-background white -flatten`), and re-encodes. When no
+`quality:` is given, native JPEG output uses quality 92 — what ImageMagick
+uses for sources without quality tables — rather than libvips' default 75.
+Only format routing libvips cannot serve (ICO input, ICO output) falls back
+to the ImageMagick compatibility backend; `backend: :vips` makes that
+fail-closed, and `backend: :imagemagick` forces the compatibility path.
+
 For JPEG output, `encoder: :auto` uses `cjpegli` when it is installed and the
-input can be encoded directly by Jpegli. Today that direct path is intentionally
-limited to PNG input; other formats fall back to the hardened ImageMagick
-compatibility backend. Use `encoder: :cjpegli` to require Jpegli and fail closed,
-or `encoder: :imagemagick` to force the compatibility path.
+input can be encoded directly by Jpegli (intentionally limited to PNG input).
+Use `encoder: :cjpegli` to require Jpegli and fail closed, `encoder: :vips`
+to force the libvips encoder, or `encoder: :imagemagick` (legacy alias for
+`backend: :imagemagick`) to force the compatibility path.
 
 ```ruby
 SafeImage.convert("upload.png", "upload.jpg", format: "jpg", quality: 85)
