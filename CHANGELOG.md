@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`sanitize_svg!` now requires `id_namespace:`.** The argument forces a
+  deliberate choice of where the output may be used, removing the footgun of a
+  silently-wrong default. Pass `:standalone` for output served only as an
+  external `<img>`/CSS-url/file, or a stable per-document String to make it safe
+  to inline (see below). Omitting it (or passing `nil`/`""`) raises
+  `ArgumentError`. Callers must update: `sanitize_svg!(path)` →
+  `sanitize_svg!(path, id_namespace: :standalone)`.
+
+### Added
+
+- **`sanitize_svg!` can produce output safe to inline into an HTML DOM.** Pass
+  `id_namespace:` a stable per-document value (e.g. the upload sha) and the
+  sanitizer prefixes every `id` and every reference to it (`href`/`xlink:href`
+  fragments, `url(#…)` in attributes and CSS, ARIA IDREF attributes like
+  `aria-labelledby`/`aria-controls`, and every `class` token plus the matching
+  `.class` selectors) with the namespace, and scopes every `<style>` selector
+  under a `<ns>-scope` class added to the root `<svg>`. Namespacing classes stops
+  an inlined SVG from invoking the host page's framework CSS (a bare
+  `class="modal fixed"` overlay vector). `var()`/`env()`/`attr()` in presentation
+  attributes are rejected outright — they resolve against the host page.
+  Inlined into a page, the preserved `<style>` can no longer reach the host
+  cascade (`*{visibility:hidden}`, `#header{display:none}`) and ids cannot
+  clobber host ids — including references written `URL(#x)`, `url('#x')`, or
+  `url("#x")`, which are namespaced like the unquoted form. In this mode the root
+  `<svg>`'s `overflow` is also dropped so it clips to its declared viewport (a
+  tiny viewport with `overflow:visible` and oversized content would otherwise
+  paint a full-page overlay). With `id_namespace: :standalone` the output is the
+  document-safe form (no namespacing). The namespace must be a valid ident (a
+  letter followed by letters/digits/`_`/`-`); malformed tokens are rejected
+  rather than coerced, so two distinct values can never collapse to one. The
+  transform is idempotent per namespace. `style=""` attributes are
+  element-scoped and inline-safe either way.
+- **`<style>` elements now fail closed on any at-rule.** Previously an at-rule
+  block followed by a valid rule (`@font-face{…}.ok{…}`) could keep the trailing
+  rule; a stylesheet containing `@` anywhere is now rejected whole, matching the
+  documented guarantee.
+- **The SVG sanitizer keeps a safe CSS subset instead of stripping all CSS.**
+  `style` attributes (as written by Inkscape) and `<style>` elements (as
+  written by Illustrator) now survive sanitisation when they parse against a
+  constructed allowlist grammar: properties mirroring the allowed
+  presentation attributes, type/class/id selectors, numeric/keyword/color
+  values, and `url(#fragment)` references only. Output is reassembled from
+  validated tokens — CSS escapes, quotes/strings, at-rules, comments, and
+  unknown properties, functions, or selectors drop the declaration, rule, or
+  whole stylesheet rather than being interpreted. A single at-rule or nested
+  block fails the whole `<style>` element closed. `!important` and modern
+  `rgb()/hsl()` slash-alpha (`rgb(R G B / A)`) are preserved; both are parsed
+  structurally and re-emitted, and admitting `/` for the alpha keeps CSS
+  comments impossible because `*` remains excluded from the value charset.
+- **The presentation-attribute allowlist covers common editor output.** Added
+  the safe, widely-emitted SVG presentation properties (and their CSS twins):
+  `stroke-dasharray`/`stroke-dashoffset`, `vector-effect`, `marker`/`marker-*`
+  (with the `<marker>` element and its geometry attributes), `color`,
+  `display`/`visibility`/`overflow`, `paint-order`/`mix-blend-mode`/`isolation`,
+  the `*-rendering` hints, and the longhand text properties (`font-style`,
+  `font-variant`, `font-stretch`, `text-decoration`, `letter-spacing`,
+  `word-spacing`, `dominant-baseline`, `baseline-shift`, `writing-mode`,
+  `direction`). The only additions carrying a URL — `marker*` — are constrained
+  to `url(#fragment)` like the existing paint and clip/mask references. Filters
+  remain out of scope.
+
 ### Changed
 
 - **Remote fetches reject bad responses from the headers alone.** The
@@ -29,6 +92,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Presentation-attribute `url()` references fail closed unless they are a
+  canonical same-document fragment.** A single validation/rewrite grammar now
+  governs both the keep decision and the namespace rewrite, so external URLs,
+  mismatched quotes, and unterminated forms (`url(#id`, `url(http://evil`) are
+  dropped rather than kept on browser parse-error leniency — and no bare,
+  un-namespaced reference can survive in inline (`id_namespace:` String) output.
+- **Attribute values containing CSS escapes are rejected outright.**
+  Browsers feed SVG presentation attributes through their CSS value parsers,
+  where an escape can re-form a token after the sanitizer's pattern checks
+  (`ur\6c(...)` is `url(...)`). No allowlisted attribute legitimately
+  contains a backslash, so any attribute value with one is now dropped.
 - **SVG parsing rejects encodings the byte-level guards cannot see through.**
   The DOCTYPE/processing-instruction guards are ASCII byte scans; a UTF-16
   document interleaves NUL bytes between the ASCII characters, so a

@@ -21,7 +21,7 @@ module SafeImage
         "probe" => -> { SafeImage.probe(ENV["JPG"]) },
         "thumbnail" => -> { SafeImage.thumbnail(input: ENV["JPG"], output: File.join(ENV["OUT"], "x.jpg"), width: 1, height: 1) },
         "dominant_color" => -> { SafeImage.dominant_color(ENV["JPG"]) },
-        "sanitize_svg!" => -> { SafeImage.sanitize_svg!(ENV["SVG"]) },
+        "sanitize_svg!" => -> { SafeImage.sanitize_svg!(ENV["SVG"], id_namespace: :standalone) },
         "fetch_remote" => -> { SafeImage.fetch_remote("https://192.0.2.1/never-fetched.png") {} }
       }
       attempts.each do |name, attempt|

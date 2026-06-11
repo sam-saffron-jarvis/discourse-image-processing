@@ -703,18 +703,55 @@ optimizer tools are tolerated.
 
 ### SVG sanitising
 
-#### `SafeImage.sanitize_svg!(path)`
+#### `SafeImage.sanitize_svg!(path, id_namespace:)`
 
-Sanitises an SVG in place using a small REXML allowlist.
+Sanitises an SVG in place using a small REXML allowlist. `id_namespace:` is
+**required** — it forces a deliberate choice of where the output may be used,
+so there is no silently-wrong default (see "Inlining" below):
 
 ```ruby
-result = SafeImage.sanitize_svg!("icon.svg")
+# served as an <img src>/CSS-url/file and never spliced into a page's DOM:
+result = SafeImage.sanitize_svg!("icon.svg", id_namespace: :standalone)
+
+# spliced inline into an HTML DOM (pass a stable, per-document token):
+result = SafeImage.sanitize_svg!("icon.svg", id_namespace: "u#{upload.sha1}")
+
 puts result[:sanitized]
 ```
+
+Omitting `id_namespace:` (or passing `nil`/`""`) raises `ArgumentError`.
 
 The sanitizer removes unsafe elements/attributes such as scripts and event
 handlers. It is intentionally conservative rather than a full browser-grade SVG
 implementation.
+
+CSS is reduced to a constructed allowlist subset rather than stripped: `style`
+attributes (as written by Inkscape) and `<style>` elements (as written by
+Illustrator) survive when they parse against a small grammar — allowlisted
+properties, type/class/id selectors, numeric/keyword/color values, and
+`url(#fragment)` references only. The output is reassembled from validated
+tokens, never echoed from the input; escapes, quotes, at-rules (`@import`,
+`@font-face`, `@media`), comments, strings, and unknown
+properties/functions/selectors drop the declaration, rule, or whole stylesheet
+rather than being interpreted.
+
+Two behaviours are worth knowing before relying on this:
+
+- **The CSS property allowlist mirrors the presentation attributes that have
+  CSS-property twins** — `SvgCss::ALLOWED_PROPERTIES` is a subset of
+  `SvgSanitizer::ALLOWED_ATTRIBUTES` (asserted by a test), so a `fill:`
+  declaration and a `fill=""` attribute are treated identically and a property
+  the sanitizer would strip as an attribute is also dropped in CSS. (The
+  reverse does not hold: geometry/XML attributes like `width`, `href`, and
+  `xmlns` are not CSS properties.) The set covers the common paint, stroke
+  (including `stroke-dasharray` and `vector-effect`), marker, text, and
+  visibility properties that Inkscape and Illustrator emit; it is deliberately
+  narrower than a browser. Filters (`filter`, `fe*`) are not yet included.
+- **A `<style>` element fails closed as a whole** on anything outside a flat
+  list of `selector { declarations }` rules. Any at-rule (e.g. one stray
+  `@import`), a nested block, or an unbalanced brace discards every rule in that
+  element, not just the offending one. Within a well-formed stylesheet,
+  individual selectors and declarations still drop independently.
 
 SVG sanitising is defense-in-depth for stored bytes. Applications that serve
 user-supplied SVGs directly should still use response-level controls such as a
@@ -722,6 +759,63 @@ restrictive `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, and/or
 attachment/sandbox handling for direct-open routes. Browsers restrict script
 execution when an SVG is embedded as `<img>`, but a top-level SVG document is a
 different sink.
+
+#### Inlining sanitized SVG into an HTML page
+
+The `id_namespace:` argument forces this decision at every call site — there is
+no default to get wrong.
+
+Pass `:standalone` when the output is only ever served as an external resource —
+`<img src>`, `background-image`, an `<object>`/`<iframe>`, or its own file. This
+is the document-safe form. It is **not** safe to splice directly into an HTML
+DOM: a preserved `<style>` rule like `*{visibility:hidden}` or
+`#header{display:none}` would join the host document's cascade, and the SVG's
+`id`s could clobber host ids — both CSS-injection / UI-redress vectors.
+
+Pass a **stable, per-document** String (e.g. the upload's sha) to make the output
+safe to inline:
+
+```ruby
+SafeImage.sanitize_svg!("icon.svg", id_namespace: "u#{upload.sha1}")
+```
+
+With a namespace, the sanitizer:
+
+- prefixes every `id` and every reference to it — `href`/`xlink:href` fragments,
+  `url(#…)` in attributes and CSS, and ARIA IDREF attributes (`aria-labelledby`,
+  `aria-describedby`, `aria-controls`, …) — so internal references stay intact
+  but cannot collide with host ids; and
+- prefixes every `class` token (and the `.class` selectors that match them), so
+  an attacker can't invoke the host page's framework CSS — a bare
+  `class="modal fixed"` would otherwise pick up Bootstrap/Tailwind/app styles and
+  become an overlay. Internal class styling still matches because attribute and
+  selector are prefixed together; and
+- scopes every `<style>` selector under a `<ns>-scope` class it adds to the root
+  `<svg>`, so `*` and type selectors only match that document's own content and
+  can never reach the host page; and
+- rejects `var()`, `env()`, and `attr()` in presentation attributes — they
+  resolve against the host page (custom properties, environment) and could pull
+  in values, including a `url()`, the sanitizer never saw; and
+- drops `overflow` from the root `<svg>` so it clips to its declared viewport — a
+  tiny `width`/`height` with `overflow:visible` and oversized content would
+  otherwise paint a full-page overlay. Inner elements keep `overflow` (markers
+  need it); the root clip bounds them.
+
+Because every `<style>` selector is anchored *under* the scope class, a rule
+targeting the root itself — `svg { … }`, `* { … }` intended to include the root,
+or a class on the root such as `.icon { … }` for `<svg class="icon">` — matches
+the root's descendants but not the root element. Root-level styling from a
+`<style>` block therefore does not survive; style the root via attributes if you
+need it. (This is rare in editor exports, which style the root with attributes
+and inner elements with classes.)
+
+`style=""` attributes never need selector scoping — a declaration list only
+styles its own element — so they are not a cascade risk in either mode. They can
+still carry `url(#…)` references, though, which are only namespaced when you pass
+a String; so `:standalone` output (bare ids and references) is still not for
+inline use. The transform is idempotent for a given namespace, so re-sanitising
+is a no-op. Use a per-document value so two inlined SVGs on one page don't share
+a namespace.
 
 ### Compatibility aliases
 

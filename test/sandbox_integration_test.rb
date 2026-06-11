@@ -103,9 +103,53 @@ module SafeImage
     def test_sanitize_svg
       svg = write_tmp("bad.svg", %q{<svg onload="x"><script>x</script><rect width="1" height="1" onclick="x"/></svg>})
 
-      result = SafeImage.sanitize_svg!(svg)
+      result = SafeImage.sanitize_svg!(svg, id_namespace: :standalone)
       assert result["sanitized"] || result[:sanitized], "sanitize_svg! did not report sanitizing"
       refute_match(/script|onload|onclick/, File.read(svg), "svg still unsafe")
+    end
+
+    # The :standalone symbol must survive JSON transport to the worker, not
+    # arrive as the string "standalone" and be treated as a real namespace.
+    def test_sanitize_svg_standalone_symbol_crosses_sandbox
+      svg = write_tmp("standalone.svg", <<~SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+          <defs><linearGradient id="g"/></defs>
+          <rect fill="url(#g)"/>
+        </svg>
+      SVG
+
+      SafeImage.sanitize_svg!(svg, id_namespace: :standalone)
+      cleaned = File.read(svg)
+
+      assert_includes cleaned, "id='g'", "standalone produced a namespaced id through the sandbox"
+      assert_includes cleaned, "url(#g)", "standalone namespaced a reference through the sandbox"
+      refute_includes cleaned, "standalone-", "the :standalone symbol leaked as a namespace"
+    end
+
+    # The documented ArgumentError for a missing/invalid id_namespace must be
+    # raised by the parent before the worker launches, not surface as a sandbox
+    # CommandError.
+    def test_sanitize_svg_namespace_validation_raises_argument_error
+      svg = write_tmp("v.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="5" height="5"/>')
+      assert_raises(ArgumentError) { SafeImage.sanitize_svg!(svg) }
+      assert_raises(ArgumentError) { SafeImage.sanitize_svg!(svg, id_namespace: nil) }
+      assert_raises(ArgumentError) { SafeImage.sanitize_svg!(svg, id_namespace: "") }
+      assert_raises(ArgumentError) { SafeImage.sanitize_svg!(svg, id_namespace: "bad/ns") }
+    end
+
+    def test_sanitize_svg_string_namespace_crosses_sandbox
+      svg = write_tmp("ns.svg", <<~SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+          <defs><linearGradient id="g"/></defs>
+          <rect fill="url(#g)"/>
+        </svg>
+      SVG
+
+      SafeImage.sanitize_svg!(svg, id_namespace: "u1")
+      cleaned = File.read(svg)
+
+      assert_includes cleaned, "id='u1-g'", "string namespace not applied through the sandbox"
+      assert_includes cleaned, "url(#u1-g)", "reference not namespaced through the sandbox"
     end
 
     def test_optimize

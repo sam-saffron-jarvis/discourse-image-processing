@@ -74,7 +74,10 @@ module SafeImage
       payload = JSON.dump(
         {
           operation: operation,
-          request: request,
+          # JSON has no symbol type; wrap symbol values so the worker can restore
+          # them (e.g. id_namespace: :standalone must not arrive as the string
+          # "standalone", which resolve_namespace would treat as a real namespace).
+          request: deep_encode_symbols(request),
           # The worker is a fresh process and must be configured like the
           # parent — minus landlock, since it already runs inside the sandbox.
           config: { backend: config.backend, max_pixels: config.max_pixels }
@@ -87,6 +90,8 @@ module SafeImage
         def deep_symbolize(value)
           case value
           when Hash
+            # {"__sym__" => "x"} is a symbol value the parent wrapped for transport.
+            return value[:__sym__].to_sym if value.size == 1 && value[:__sym__].is_a?(String)
             value.each_with_object({}) { |(k, v), h| h[k.to_sym] = deep_symbolize(v) }
           when Array
             value.map { |v| deep_symbolize(v) }
@@ -103,9 +108,9 @@ module SafeImage
         ]
         raise ArgumentError, "unsupported sandbox operation: #{operation}" unless allowed_operations.include?(operation)
 
-        request = payload.fetch(:request)
+        request = deep_symbolize(payload.fetch(:request))
         args = request[:args] || []
-        kwargs = deep_symbolize(request[:kwargs] || {})
+        kwargs = request[:kwargs] || {}
 
         config = payload.fetch(:config)
         SafeImage.configure!(
@@ -173,6 +178,21 @@ module SafeImage
         stdout: e.stdout,
         stderr: e.stderr
       )
+    end
+
+    # JSON cannot represent symbols, so wrap symbol values as {"__sym__" => name}
+    # for the worker's deep_symbolize to restore. Mirrors that decoder.
+    def deep_encode_symbols(value)
+      case value
+      when Symbol
+        { "__sym__" => value.to_s }
+      when Hash
+        value.transform_values { |v| deep_encode_symbols(v) }
+      when Array
+        value.map { |v| deep_encode_symbols(v) }
+      else
+        value
+      end
     end
 
     def sandbox_paths(request, operation)
