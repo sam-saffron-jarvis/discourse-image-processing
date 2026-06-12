@@ -476,12 +476,12 @@ module SafeImage
       content_ext
     end
 
-    def validate_downloaded_image!(path, ext)
-      if ext == ".svg"
-        SvgMetadata.probe(path)
-      else
-        SafeImage.probe(path)
-      end
+    def validate_downloaded_image!(path, _ext)
+      # Always go back through the public local probe path so configured
+      # sandboxing and pixel limits apply uniformly. Remote.fetch itself cannot
+      # run in the worker because it needs network access; once bytes are on
+      # disk, validation must re-enter the normal image-processing boundary.
+      SafeImage.probe(path)
     end
   end
 end

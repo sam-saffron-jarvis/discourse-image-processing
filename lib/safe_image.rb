@@ -386,6 +386,7 @@ module SafeImage
     # sandbox CommandError instead of the documented ArgumentError.
     config
     SvgSanitizer.resolve_namespace(kwargs.fetch(:id_namespace, SvgSanitizer::NAMESPACE_REQUIRED))
+    kwargs = kwargs.merge(max_pixels: resolved_max_pixels(kwargs[:max_pixels]))
     maybe_sandbox(:sanitize_svg!, args: args, kwargs: kwargs) { SvgSanitizer.sanitize!(*args, **kwargs) }
   end
 end

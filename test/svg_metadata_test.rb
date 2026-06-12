@@ -33,6 +33,22 @@ module SafeImage
       assert_equal [34, 45], SafeImage.size(svg)
     end
 
+    def test_ignores_namespaced_root_dimensions
+      svg = write_tmp("namespaced-dimensions.svg", <<~SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:e="urn:e" width="1000" height="1000" e:width="1" e:height="1"></svg>
+      SVG
+
+      assert_raises(LimitError) { SafeImage.size(svg, max_pixels: 100) }
+    end
+
+    def test_sanitize_ignores_namespaced_root_dimensions
+      svg = write_tmp("sanitize-namespaced-dimensions.svg", <<~SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:e="urn:e" width="1000" height="1000" e:width="1" e:height="1"></svg>
+      SVG
+
+      assert_raises(LimitError) { SafeImage.sanitize_svg!(svg, id_namespace: :standalone, max_pixels: 100) }
+    end
+
     def test_accepts_pixel_units
       svg = write_tmp("px.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="10px" height="20px"></svg>')
       assert_equal [10, 20], SafeImage.size(svg)

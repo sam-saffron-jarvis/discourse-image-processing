@@ -131,7 +131,10 @@ module SafeImage
       # during the build: an attribute's namespace only resolves once its element
       # is attached under the root that declares the prefix, so href/url rewrites
       # must happen after the whole tree exists.
-      namespace_tree!(out_root, namespace) if namespace
+      if namespace
+        namespace_tree!(out_root, namespace)
+        drop_external_references!(out_root)
+      end
 
       reject_render_expansion!(out_root)
 
@@ -219,12 +222,14 @@ module SafeImage
 
         if attr_expanded_name(attr) == "style"
           sanitized = SvgCss.sanitize_declarations(value, namespace: namespace)
+          sanitized = remove_marker_declarations(sanitized) unless replicating_element?(in_element)
           style_value = sanitized if sanitized
           next
         end
 
         next unless allowed_attribute?(attr)
         next if event_attribute?(attr)
+        next if marker_attribute?(attr) && !replicating_element?(in_element)
         next if dangerous_value?(value)
         next if invalid_href?(attr)
 
@@ -241,6 +246,84 @@ module SafeImage
       element.children.each do |child|
         namespace_tree!(child, namespace) if child.is_a?(Nokogiri::XML::Element)
       end
+    end
+
+    # Inline-safe output must not bind to the host document (or another inlined
+    # SVG) through a dangling fragment. After namespacing, every same-document
+    # href, ARIA IDREF and url(#...) must resolve inside this sanitized tree; if
+    # it does not, drop the reference-bearing attribute/declaration/rule.
+    def drop_external_references!(root)
+      id_map = {}
+      collect_ids(root, id_map)
+      drop_unresolved_references!(root, id_map)
+    end
+
+    def drop_unresolved_references!(element, id_map)
+      if element.name.to_s == "style"
+        filtered = filter_unresolved_stylesheet(element.text.to_s, id_map)
+        if filtered
+          element.children.remove
+          element.add_child(element.document.create_text_node(filtered))
+        else
+          element.unlink
+        end
+        return
+      end
+
+      element.attribute_nodes.each do |attr|
+        next unless href_attribute?(attr)
+
+        value = attr.value.to_s
+        attr.remove if value.start_with?("#") && !id_map.key?(value[1..])
+      end
+
+      ARIA_IDREF_ATTRIBUTES.each do |aria|
+        value = element[aria]
+        next unless value
+
+        refs = value.split(/\s+/).select { |ref| id_map.key?(ref) }
+        if refs.empty?
+          element.remove_attribute(aria)
+        else
+          element[aria] = refs.join(" ")
+        end
+      end
+
+      element.attribute_nodes.each do |attr|
+        next if href_attribute?(attr)
+
+        if attr.name.to_s == "style"
+          filtered = filter_unresolved_declarations(attr.value.to_s, id_map)
+          filtered ? attr.value = filtered : attr.remove
+          next
+        end
+
+        value = attr.value.to_s
+        next unless value.match?(/url\(/i)
+        attr.remove if unresolved_url_fragment?(value, id_map)
+      end
+
+      element.children.each do |child|
+        drop_unresolved_references!(child, id_map) if child.is_a?(Nokogiri::XML::Element)
+      end
+    end
+
+    def filter_unresolved_stylesheet(css, id_map)
+      rules = []
+      css.to_s.scan(/([^{}]+)\{([^{}]*)\}/) do |selectors, body|
+        declarations = filter_unresolved_declarations(body, id_map)
+        rules << "#{selectors}{#{declarations}}" if declarations
+      end
+      rules.empty? ? nil : rules.join
+    end
+
+    def filter_unresolved_declarations(declarations, id_map)
+      kept = declarations.to_s.split(";").reject { |declaration| unresolved_url_fragment?(declaration, id_map) }
+      kept.empty? ? nil : kept.join(";")
+    end
+
+    def unresolved_url_fragment?(value, id_map)
+      value.to_s.scan(URL_FRAGMENT_REF).any? { !id_map.key?(Regexp.last_match(2)) }
     end
 
     # Sets an attribute on the output node, preserving the xlink namespace for
@@ -296,6 +379,24 @@ module SafeImage
 
     def event_attribute?(attr)
       attr.name.to_s.downcase.start_with?("on")
+    end
+
+    def marker_attribute?(attr)
+      attr.namespace.nil? && MARKER_ATTRIBUTES.include?(attr.name.to_s)
+    end
+
+    def replicating_element?(element)
+      REPLICATING_ELEMENTS.include?(element.name.to_s)
+    end
+
+    def remove_marker_declarations(style)
+      return nil unless style
+
+      kept = style.split(";").reject do |declaration|
+        property = declaration.split(":", 2).first.to_s
+        MARKER_ATTRIBUTES.include?(property)
+      end
+      kept.empty? ? nil : kept.join(";")
     end
 
     def href_attribute?(attr)
@@ -460,7 +561,8 @@ module SafeImage
     def reject_render_expansion!(root)
       id_map = {}
       collect_ids(root, id_map)
-      subtree_render_cost(root, id_map, {}, {})
+      stylesheet_markers = stylesheet_marker_targets(root, id_map)
+      subtree_render_cost(root, id_map, {}, {}, stylesheet_markers)
     end
 
     def collect_ids(element, id_map)
@@ -471,7 +573,7 @@ module SafeImage
       end
     end
 
-    def subtree_render_cost(element, id_map, memo, active)
+    def subtree_render_cost(element, id_map, memo, active, stylesheet_markers)
       key = element.object_id
       cached = memo[key]
       return cached if cached
@@ -482,16 +584,16 @@ module SafeImage
       element.children.each do |child|
         next unless child.is_a?(Nokogiri::XML::Element)
 
-        cost += subtree_render_cost(child, id_map, memo, active)
+        cost += subtree_render_cost(child, id_map, memo, active, stylesheet_markers)
         check_render_expansion!(cost)
       end
 
       if use_element?(element) && (target = use_target(element, id_map))
-        cost += subtree_render_cost(target, id_map, memo, active)
+        cost += subtree_render_cost(target, id_map, memo, active, stylesheet_markers)
         check_render_expansion!(cost)
       end
 
-      cost += marker_render_cost(element, id_map, memo, active)
+      cost += marker_render_cost(element, id_map, memo, active, stylesheet_markers)
       check_render_expansion!(cost)
 
       active.delete(key)
@@ -504,30 +606,85 @@ module SafeImage
     # set still catches a marker that references itself, and a marker containing a
     # <use> bomb is counted. Vertices are over-counted (see path_vertex_count),
     # which only makes the bound more conservative.
-    def marker_render_cost(element, id_map, memo, active)
-      return 0 unless REPLICATING_ELEMENTS.include?(element.name.to_s)
+    def marker_render_cost(element, id_map, memo, active, stylesheet_markers)
+      return 0 unless replicating_element?(element)
 
-      markers = referenced_markers(element, id_map)
+      markers = referenced_markers(element, id_map, stylesheet_markers)
       return 0 if markers.empty?
 
       vertices = path_vertex_count(element)
       return 0 if vertices.zero?
 
-      per_vertex = markers.sum { |marker| subtree_render_cost(marker, id_map, memo, active) }
+      per_vertex = markers.sum { |marker| subtree_render_cost(marker, id_map, memo, active, stylesheet_markers) }
       vertices * per_vertex
+    end
+
+    def stylesheet_marker_targets(root, id_map)
+      targets = REPLICATING_ELEMENTS.to_h { |name| [name, []] }
+      collect_stylesheet_marker_targets(root, id_map, targets)
+      targets.transform_values(&:uniq)
+    end
+
+    def collect_stylesheet_marker_targets(element, id_map, targets)
+      if element.name.to_s == "style"
+        stylesheet_marker_rules(element.text.to_s).each do |element_names, refs|
+          marker_targets = refs.filter_map { |ref| id_map[ref] }
+          next if marker_targets.empty?
+
+          element_names.each { |name| targets[name].concat(marker_targets) }
+        end
+      end
+
+      element.children.each do |child|
+        collect_stylesheet_marker_targets(child, id_map, targets) if child.is_a?(Nokogiri::XML::Element)
+      end
+    end
+
+    def stylesheet_marker_rules(css)
+      rules = []
+      css.to_s.scan(/([^{}]+)\{([^{}]*)\}/) do |selectors, body|
+        refs = []
+        body.to_s.split(";").each do |declaration|
+          property, value = declaration.split(":", 2)
+          next unless MARKER_ATTRIBUTES.include?(property.to_s.strip)
+
+          value.to_s.scan(URL_FRAGMENT_REF) { refs << Regexp.last_match(2) }
+        end
+        rules << [selector_replicating_element_names(selectors), refs.uniq] unless refs.empty?
+      end
+      rules
+    end
+
+    def selector_replicating_element_names(selectors)
+      names = []
+      selectors.to_s.split(",").each do |selector|
+        selector_names = []
+        selector.scan(/(?:\A|[\s>])(\*|path|line|polyline|polygon)(?=[\s>.#]|\z)/i) do |match|
+          token = match.first.downcase
+          return REPLICATING_ELEMENTS if token == "*"
+
+          selector_names << token
+        end
+        # A pure class/id selector may match any geometry element.
+        return REPLICATING_ELEMENTS if selector_names.empty?
+
+        names.concat(selector_names)
+      end
+      names.empty? ? REPLICATING_ELEMENTS : names.uniq
     end
 
     # Collects the distinct marker subtrees a geometry element references, via
     # the marker-* presentation attributes or their style="" twins. Only the
     # canonical url(#fragment) form survives sanitisation, so one regex over the
     # marker attributes and the style attribute finds every reference.
-    def referenced_markers(element, id_map)
+    def referenced_markers(element, id_map, stylesheet_markers)
       sources = MARKER_ATTRIBUTES.map { |name| element[name].to_s }
       sources << element["style"].to_s
       targets = []
       sources.each do |value|
         value.scan(URL_FRAGMENT_REF) { targets << id_map[Regexp.last_match(2)] }
       end
+      targets.concat(stylesheet_markers.fetch(element.name.to_s, []))
       targets.compact.uniq
     end
 
@@ -537,6 +694,8 @@ module SafeImage
     # tightens the bound; under-counting would be the bug, so we never try to be
     # precise about path command grammar.
     def path_vertex_count(element)
+      return 2 if element.name.to_s == "line"
+
       geometry = "#{element['d']} #{element['points']}"
       count = geometry.scan(/\d+(?:\.\d+)?/).length
       count.zero? ? 0 : count + 1
@@ -568,7 +727,14 @@ module SafeImage
     def serialize(root)
       options = Nokogiri::XML::Node::SaveOptions::AS_XML |
                 Nokogiri::XML::Node::SaveOptions::NO_DECLARATION
-      root.to_xml(save_with: options)
+      xml = root.to_xml(save_with: options)
+      xml = xml.sub(%( xmlns:xlink="#{XLINK_NAMESPACE}"), "") unless xlink_used?(root)
+      xml
+    end
+
+    def xlink_used?(element)
+      element.attribute_nodes.any? { |attr| href_attribute?(attr) && attr.namespace&.href == XLINK_NAMESPACE } ||
+        element.children.any? { |child| child.is_a?(Nokogiri::XML::Element) && xlink_used?(child) }
     end
 
     def atomic_write(path, content)

@@ -180,7 +180,14 @@ module SafeImage
       raise LimitError, "SVG dimensions exceed #{MAX_SVG_DIMENSION}px" if width > MAX_SVG_DIMENSION || height > MAX_SVG_DIMENSION
 
       pixels = width * height
-      limit = max_pixels || MAX_SVG_PIXELS
+      limit = if max_pixels.nil?
+        MAX_SVG_PIXELS
+      else
+        value = Integer(max_pixels)
+        raise ArgumentError, "max_pixels must be positive" if value <= 0
+
+        value
+      end
       raise LimitError, "SVG has #{pixels.to_i} pixels, exceeds #{limit}" if pixels > limit
 
       [width.ceil, height.ceil]
@@ -268,7 +275,16 @@ module SafeImage
           return unless @root_name.nil?
 
           @root_name = name
-          @root_attributes = attrs.each_with_object({}) { |attr, hash| hash[attr.localname] = attr.value }
+          @root_attributes = attrs.each_with_object({}) do |attr, hash|
+            # Dimensions are security-relevant: only the actual no-namespace
+            # root attributes a browser will use may feed the pixel cap. A
+            # namespaced e:width/e:height must not shadow width/height here
+            # and then be dropped by the sanitizer, leaving a huge output SVG
+            # that metadata claimed was tiny.
+            next unless attr.prefix.to_s.empty? && attr.uri.to_s.empty?
+
+            hash[attr.localname] = attr.value
+          end
         end
 
         def end_element_namespace(_name, _prefix = nil, _uri = nil)

@@ -18,6 +18,7 @@ module SafeImage
     def test_mixed_case_href_and_xlink_href_are_not_resource_references
       out = sanitize(<<~SVG, id_namespace: "u1")
         <svg xmlns="#{SVG_XMLNS}" xmlns:xlink="#{XLINK_XMLNS}" width="10" height="10">
+          <defs><g id="safe"/></defs>
           <use hReF="javascript:alert(1)"/>
           <use xlink:hReF="javascript:alert(2)"/>
           <use XLINK:href="javascript:alert(3)" xmlns:XLINK="#{XLINK_XMLNS}"/>
@@ -32,6 +33,7 @@ module SafeImage
     def test_xlink_namespace_alias_or_rebinding_does_not_create_href_bypass
       out = sanitize(<<~SVG, id_namespace: "u1")
         <svg xmlns="#{SVG_XMLNS}" xmlns:xlink="urn:not-xlink" xmlns:xl="#{XLINK_XMLNS}" width="10" height="10">
+          <defs><g id="safe"/></defs>
           <use xl:href="javascript:alert(1)"/>
           <use xlink:href="#evil"/>
           <use href="#safe"/>
@@ -182,6 +184,33 @@ module SafeImage
         </svg>
       SVG
       assert_raises(LimitError) { SafeImage.sanitize_svg!(points, id_namespace: "u1") }
+    end
+
+    def test_marker_render_bomb_via_line_vertices_is_rejected
+      marker = %(<marker id="m" markerWidth="2" markerHeight="2">#{'<rect width="1" height="1"/>' * 1200}</marker>)
+      lines = (1..1200).map { |i| %(<line x1="0" y1="#{i}" x2="1" y2="#{i}" marker-end="url(#m)"/>) }.join
+      bomb = write_tmp("marker-line-bomb.svg", <<~SVG)
+        <svg xmlns="#{SVG_XMLNS}" width="100" height="100">
+          <defs>#{marker}</defs>
+          #{lines}
+        </svg>
+      SVG
+
+      assert_raises(LimitError) { SafeImage.sanitize_svg!(bomb, id_namespace: "u1") }
+    end
+
+    def test_marker_render_bomb_via_stylesheet_rule_is_rejected
+      marker = %(<marker id="m" markerWidth="2" markerHeight="2">#{'<rect width="1" height="1"/>' * 1200}</marker>)
+      lines = (1..1200).map { |i| %(<polyline points="0,#{i} 1,#{i}"/>) }.join
+      bomb = write_tmp("marker-css-bomb.svg", <<~SVG)
+        <svg xmlns="#{SVG_XMLNS}" width="100" height="100">
+          <defs>#{marker}</defs>
+          <style>polyline{marker-end:url(#m)}</style>
+          #{lines}
+        </svg>
+      SVG
+
+      assert_raises(LimitError) { SafeImage.sanitize_svg!(bomb, id_namespace: "u1") }
     end
 
     # A marker whose own content is itself a marked dense path: the multipliers

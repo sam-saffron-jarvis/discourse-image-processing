@@ -28,14 +28,20 @@ module SafeImage
       assert_jpeg_magic out
     end
 
-    def test_convert_uses_cjpegli_for_direct_png_input
+    def test_convert_uses_cjpegli_for_png_input_after_native_decode
       require_cjpegli!
       out = tmp_path("converted.jpg")
       result = SafeImage.convert(PNG, out, format: "jpg", quality: 85, max_pixels: PNG_PIXELS)
 
-      assert_equal "cjpegli", result.backend
+      assert_equal "libvips-direct+cjpegli", result.backend
       assert_jpeg_magic out
       assert_equal :jpeg, SafeImage.type(out, max_pixels: PNG_PIXELS)
+    end
+
+    def test_convert_to_jpeg_respects_pixel_cap_before_cjpegli_encode
+      assert_raises(LimitError) do
+        SafeImage.convert(PNG, tmp_path("too-big.jpg"), format: "jpg", quality: 85, max_pixels: 1)
+      end
     end
 
     def test_convert_falls_back_to_vips_for_heic_input

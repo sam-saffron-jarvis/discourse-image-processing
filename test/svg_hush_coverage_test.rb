@@ -82,7 +82,7 @@ module SafeImage
       ["/hello world.jpg", nil],
       ["b.jpg", nil],
       ["./x/", nil],
-      ["#hash", "u1-hash"],
+      ["#hash", nil],
       ["?q s", nil],
       ["//host/PAth", nil],
       ["//host/%2fpath", nil],
@@ -180,6 +180,7 @@ module SafeImage
     def test_svg_hush_xlink_href_vectors_are_fragment_only
       out = sanitize_svg(<<~SVG, id_namespace: "u1", name: "xlink-vectors.svg")
         <svg xmlns="#{SVG_XMLNS}" xmlns:xlink="#{XLINK_XMLNS}" width="10" height="10">
+          <defs><g id="safe"/></defs>
           <use xlink:href="javascript:alert(2)"/>
           <use xlink:href="data:image/svg+xml,%3Csvg%20onload='alert(88)'%3E"/>
           <use xlink:href="defs.svg#icon-1"/>
@@ -249,6 +250,7 @@ module SafeImage
             <pattern id="p1" xmlns:x="#{XLINK_XMLNS}" patternUnits="userSpaceOnUse" width="32" height="32">
               <image x:href="test.gif" href="test.gif" width="32" height="32" />
             </pattern>
+            <marker id="ok" markerWidth="2" markerHeight="2"><path d="M0 0 L2 1 L0 2 z"/></marker>
           </defs>
           <g id="righteye" class="eye" xml:space="preserve">
             <path style="fill:red; @\\import 'boo';" id="lid" data-name="lid" d="M0 0h10"/>

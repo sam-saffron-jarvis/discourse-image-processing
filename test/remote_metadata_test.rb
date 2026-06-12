@@ -103,6 +103,21 @@ module SafeImage
       assert_equal [12, 34], SafeImage.remote_size(server.url("/icon.svg"), allow_private: true, max_bytes: 1_000_000)
     end
 
+    def test_remote_svg_download_validation_uses_public_probe_path
+      called = false
+      original_probe = SafeImage.method(:probe)
+      SafeImage.stub(:probe, lambda { |path, **kwargs|
+        called = true
+        original_probe.call(path, **kwargs)
+      }) do
+        SafeImage.fetch_remote(server.url("/icon.svg"), allow_private: true, max_bytes: 1_000_000) do |path|
+          assert_equal ".svg", File.extname(path)
+        end
+      end
+
+      assert called, "remote SVG validation bypassed SafeImage.probe"
+    end
+
     def test_remote_animated_detection
       assert SafeImage.remote_animated?(server.url("/animated"), allow_private: true, max_bytes: 1_000_000, max_pixels: PNG_PIXELS)
     end

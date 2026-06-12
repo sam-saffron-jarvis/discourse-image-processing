@@ -5,8 +5,8 @@ require_relative "test_helper"
 module SafeImage
   class ConvertTest < TestCase
     def test_native_convert_flattens_alpha_onto_white_like_imagemagick
-      # Native.convert directly: the public path may hand PNG->JPEG to cjpegli
-      # when it is installed, and this test pins the vips flatten behaviour.
+      # Native.convert directly: the public path may encode generated JPEGs with
+      # cjpegli when it is installed, and this test pins the vips flatten behaviour.
       Native.convert(PNG, tmp_path("v.jpg"), "jpg", 85, PNG_PIXELS)
 
       configure_safe_image(backend: :imagemagick)

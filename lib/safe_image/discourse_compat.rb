@@ -214,13 +214,14 @@ module SafeImage
       normalized_format = format.to_s.downcase == "jpeg" ? "jpg" : format.to_s.downcase
 
       if use_jpegli_for_convert?(input, normalized_format)
-        info = JpegliBackend.convert(
+        info = jpegli_convert_after_native_decode(
           input: input,
           output: output,
           quality: quality || JpegliBackend::DEFAULT_QUALITY,
+          max_pixels: max_pixels,
           chroma_subsampling: chroma_subsampling
         )
-        return result_from_info(input, output, info, "cjpegli")
+        return result_from_info(input, output, info, compat_backend_name(:vips, info))
       end
 
       info = write_through_tempfile(output) do |tmp_path|
@@ -228,6 +229,19 @@ module SafeImage
       end
       optimize_output(output, normalized_format == "jpg" ? quality : nil) if optimize
       result_from_info(input, output, info, "libvips-direct")
+    end
+
+    def jpegli_convert_after_native_decode(input:, output:, quality:, max_pixels:, chroma_subsampling:)
+      with_temp_png(output) do |tmp_path|
+        decoded = Native.convert(input, tmp_path, "png", 100, max_pixels)
+        JpegliBackend.encode(
+          input: tmp_path,
+          output: output,
+          quality: quality,
+          chroma_subsampling: JpegliBackend.validate_chroma_subsampling!(chroma_subsampling, input_format: decoded.fetch(:input_format)),
+          input_format: decoded.fetch(:input_format)
+        )
+      end
     end
 
     def use_jpegli_for_convert?(input, normalized_format)

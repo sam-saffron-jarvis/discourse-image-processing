@@ -9,6 +9,13 @@ module SafeImage
       assert_raises(InvalidImageError) { SafeImage.sanitize_svg!(path, id_namespace: :standalone) }
     end
 
+    def test_uses_configured_max_pixels_by_default
+      configure_safe_image(max_pixels: 100)
+      path = write_tmp("too-large.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1000"/>')
+
+      assert_raises(LimitError) { SafeImage.sanitize_svg!(path, id_namespace: :standalone) }
+    end
+
     def test_strips_active_content_and_keeps_fragment_references
       path = write_tmp("bad.svg", <<~SVG)
         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" onload="alert(1)">
@@ -276,6 +283,27 @@ module SafeImage
       refute_match(/(?<![\w-])#header\{/, cleaned, "bare #header selector leaked")
     end
 
+    def test_id_namespace_drops_references_that_do_not_resolve_inside_svg
+      path = write_tmp("inline-dangling.svg", <<~SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="40" height="40">
+          <defs><linearGradient id="local"/></defs>
+          <style>.ok{fill:url(#local)} .bad{stroke:url(#u1-host)}</style>
+          <rect id="shape" aria-labelledby="label u1-host" fill="url(#local)" stroke="url(#u1-host)" style="fill:url(#u1-host);opacity:.5"/>
+          <use href="#u1-host" xlink:href="#local"/>
+        </svg>
+      SVG
+
+      SafeImage.sanitize_svg!(path, id_namespace: "u1")
+      cleaned = File.read(path)
+
+      assert_includes cleaned, 'fill="url(#u1-local)"', "resolved local paint reference was dropped"
+      assert_includes cleaned, ".u1-scope .u1-ok{fill:url(#u1-local)}", "resolved CSS URL was dropped"
+      assert_includes cleaned, "opacity:.5", "safe declaration sharing a style attribute was dropped"
+      assert_includes cleaned, 'xlink:href="#u1-local"', "resolved xlink reference was dropped"
+      refute_includes cleaned, "#u1-host", "dangling namespaced reference can bind outside the SVG"
+      refute_includes cleaned, "aria-labelledby", "unresolved ARIA IDREF was kept"
+    end
+
     def test_namespaces_quoted_and_uppercase_url_references
       path = write_tmp("urlforms.svg", <<~SVG)
         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
@@ -413,13 +441,13 @@ module SafeImage
       SafeImage.sanitize_svg!(path, id_namespace: "u1")
       cleaned = File.read(path)
 
-      assert_includes cleaned, 'aria-labelledby="u1-header u1-title"', "IDREFS list not namespaced"
+      assert_includes cleaned, 'aria-labelledby="u1-title"', "resolved IDREF was not kept/namespaced"
       assert_includes cleaned, 'aria-describedby="u1-desc"', "single IDREF not namespaced"
-      assert_includes cleaned, 'aria-controls="u1-a u1-b"', "IDREFS not namespaced"
+      refute_includes cleaned, "aria-controls", "unresolved ARIA IDREFS were kept"
       assert_includes cleaned, 'aria-label="plain text"', "free-text aria attribute was mangled"
-      # every token in every aria IDREF attribute is namespaced
-      %w[aria-labelledby aria-describedby aria-controls].each do |aria|
-        cleaned[/#{aria}='([^']*)'/, 1].to_s.split.each do |ref|
+      # every token in every remaining aria IDREF attribute is namespaced and internal
+      %w[aria-labelledby aria-describedby].each do |aria|
+        cleaned[/#{aria}="([^"]*)"/, 1].to_s.split.each do |ref|
           assert ref.start_with?("u1-"), "bare aria id reference #{ref.inspect} survived in #{aria}"
         end
       end
